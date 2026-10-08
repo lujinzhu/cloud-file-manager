@@ -228,7 +228,9 @@ if [ "${KEEP_ENV:-0}" != "1" ]; then
 CFM_ROOT=$CFM_ROOT_VAL
 CFM_PASSWORD_HASH=$PW_HASH
 CFM_PASSWORD_SALT=$PW_SALT
-CFM_PWD_CHANGED=0
+# 初始密码哈希：登录时用它判断「是否还在用初始密码」，相同才强制修改
+CFM_INITIAL_PASSWORD_HASH=$PW_HASH
+CFM_INITIAL_PASSWORD_SALT=$PW_SALT
 CFM_HOST=0.0.0.0
 CFM_PORT=$CFM_PORT_INPUT
 CFM_SECRET=$CFM_SECRET_VAL
@@ -244,6 +246,7 @@ EOF
   printf "  ${C_B}CFM_PASSWORD${C_0}        = %s   ${C_Y}← 请立即记下，仅展示这一次${C_0}\n" "$CFM_PW_INPUT"
   printf "  ${C_B}CFM_PASSWORD_HASH${C_0}   = %s…（PBKDF2 哈希）\n" "$(echo "$PW_HASH" | head -c 24)"
   printf "  ${C_B}CFM_PASSWORD_SALT${C_0}   = %s…\n" "$(echo "$PW_SALT" | head -c 16)"
+  printf "  ${C_B}CFM_INITIAL_PASSWORD_HASH${C_0} = 与当前初始密码一致（用于判断是否强制修改）\n"
   printf "  ${C_B}CFM_HOST${C_0}            = 0.0.0.0\n"
   printf "  ${C_B}CFM_PORT${C_0}            = %s\n" "$CFM_PORT_INPUT"
   printf "  ${C_B}CFM_SECRET${C_0}          = %s…（随机生成）\n" "$(echo "$CFM_SECRET_VAL" | head -c 24)"
@@ -252,13 +255,10 @@ EOF
   printf "  ${C_B}CFM_QUOTA${C_0}           = %s（云盘总容量，字节）\n" "$QUOTA_VAL"
 fi
 
-# 老部署升级：补写 CFM_QUOTA / CFM_PWD_CHANGED（保留现有配置时）
+# 老部署升级：补写 CFM_QUOTA（保留现有配置时）
 if [ -f "$ENV_FILE" ] && ! grep -q '^CFM_QUOTA=' "$ENV_FILE" 2>/dev/null; then
   upsert_env "CFM_QUOTA" "$(default_quota)"
   info "已为现有配置补充默认云盘容量（CFM_QUOTA，磁盘的 80%）"
-fi
-if [ -f "$ENV_FILE" ] && ! grep -q '^CFM_PWD_CHANGED=' "$ENV_FILE" 2>/dev/null; then
-  upsert_env "CFM_PWD_CHANGED" "0"
 fi
 
 # ---------------- 5. systemd（可选，改系统先询问） ----------------

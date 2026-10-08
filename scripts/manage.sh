@@ -146,6 +146,7 @@ svc_password() {
   hash=$(echo "$out" | awk '{print $2}')
   upsert_env "CFM_PASSWORD_HASH" "$hash"
   upsert_env "CFM_PASSWORD_SALT" "$salt"
+  upsert_env "CFM_PWD_CHANGED" "1"
   # 删除可能的旧明文密码配置
   sed -i '/^CFM_PASSWORD=/d' "$ENV_FILE"
   chmod 600 "$ENV_FILE"

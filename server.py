@@ -81,7 +81,10 @@ CHUNK_SIZE = int(os.environ.get("CFM_CHUNK_SIZE", 1024 * 1024))    # 续传分�
 UPLOAD_TTL = int(os.environ.get("CFM_UPLOAD_TTL", 24 * 3600))      # 上传会话保留时长
 SEARCH_LIMIT = int(os.environ.get("CFM_SEARCH_LIMIT", "300"))      # 搜索结果上限
 QUOTA = int(os.environ.get("CFM_QUOTA", "0"))                      # 云盘总容量（字节），0=不限
-PWD_CHANGED = os.environ.get("CFM_PWD_CHANGED", "0") == "1"        # 是否已修改过初始密码
+# 初始化时生成的初始密码哈希。登录时拿它和「用户输入的密码」比对：
+# 一样 ⇒ 还在用初始密码 ⇒ 强制改密；不一样 ⇒ 用户已改过 ⇒ 不强制。
+INITIAL_HASH = os.environ.get("CFM_INITIAL_PASSWORD_HASH", "").lower()
+INITIAL_SALT = os.environ.get("CFM_INITIAL_PASSWORD_SALT", "")
 ENV_PATH = os.path.join(BASE_DIR, ".env")                          # 配置写回目标
 
 # 标准库 mimetypes 缺失的常见类型，主动补充，保证预览时浏览器能正确渲染
@@ -123,6 +126,21 @@ def verify_password(input_pw):
         except Exception:
             return False
     return (input_pw or "") == PASSWORD
+
+
+def is_initial_password(input_pw):
+    """当前登录用的密码是否仍是初始化时的初始密码（哈希比对）。"""
+    if INITIAL_HASH:
+        try:
+            salt = bytes.fromhex(INITIAL_SALT) if INITIAL_SALT else b""
+            calc = hashlib.pbkdf2_hmac(
+                "sha256", (input_pw or "").encode("utf-8"), salt, PBKDF2_ITERATIONS
+            ).hex()
+            return hmac_mod.compare_digest(calc, INITIAL_HASH)
+        except Exception:
+            return False
+    # 老版本部署没有初始哈希时，回退到 CFM_PWD_CHANGED 标记
+    return os.environ.get("CFM_PWD_CHANGED", "0") != "1"
 
 
 def update_env_file(updates):
@@ -270,9 +288,12 @@ def quota_error_response():
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or {}
-    if verify_password(data.get("password", "")):
+    pw = data.get("password", "")
+    if verify_password(pw):
         session["auth"] = True
-        return jsonify(ok=True, mustChange=not PWD_CHANGED)
+        # 仍在使用初始密码 → 强制弹窗修改；否则不打扰
+        session["mustChange"] = is_initial_password(pw)
+        return jsonify(ok=True, mustChange=session["mustChange"])
     return jsonify(ok=False, error="密码错误"), 401
 
 
@@ -286,7 +307,7 @@ def logout():
 def me():
     return jsonify(
         authenticated=bool(session.get("auth")),
-        mustChange=(bool(session.get("auth")) and not PWD_CHANGED),
+        mustChange=(bool(session.get("auth")) and bool(session.get("mustChange"))),
     )
 
 
@@ -294,18 +315,32 @@ def me():
 @app.route("/api/password", methods=["POST"])
 @login_required
 def change_password():
-    global PASSWORD_HASH, PASSWORD_SALT, PWD_CHANGED
+    global PASSWORD_HASH, PASSWORD_SALT
     data = request.get_json(silent=True) or {}
-    if not verify_password(data.get("oldPassword", "")):
+    old_input = data.get("oldPassword", "")
+    if not verify_password(old_input):
         return jsonify(ok=False, error="旧密码错误"), 400
     new = str(data.get("newPassword", ""))
     if len(new) < 6:
         return jsonify(ok=False, error="新密码至少 6 位"), 400
+    if new == old_input or verify_password(new):
+        # 新旧一致：无论当前哈希还是初始哈希，都不能重复沿用
+        return jsonify(ok=False, error="新密码不能与旧密码相同"), 400
+    if INITIAL_HASH:
+        try:
+            calc_initial = hashlib.pbkdf2_hmac(
+                "sha256", new.encode("utf-8"),
+                bytes.fromhex(INITIAL_SALT) if INITIAL_SALT else b"", PBKDF2_ITERATIONS
+            ).hex()
+            if hmac_mod.compare_digest(calc_initial, INITIAL_HASH):
+                return jsonify(ok=False, error="新密码不能与初始密码相同"), 400
+        except Exception:
+            pass
     salt = secrets.token_hex(16)
     h = hashlib.pbkdf2_hmac(
         "sha256", new.encode("utf-8"), bytes.fromhex(salt), PBKDF2_ITERATIONS
     ).hex()
-    PASSWORD_HASH, PASSWORD_SALT, PWD_CHANGED = h, salt, True
+    PASSWORD_HASH, PASSWORD_SALT = h, salt
     try:
         update_env_file({
             "CFM_PASSWORD_HASH": h,
