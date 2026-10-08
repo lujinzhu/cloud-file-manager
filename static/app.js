@@ -18,6 +18,7 @@
     sortAsc: (localStorage.getItem("cfm_sortAsc") || "1") === "1",
     mode: "browse",    // browse | search（搜索结果模式）
     searchTimer: null,
+    quota: null,       // /api/quota 结果（used/quota/diskTotal/diskFree）
   };
 
   /* ---------------- 排序 ---------------- */
@@ -101,8 +102,22 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(obj || {}),
     });
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) throw await httpError(r);
     return r.json();
+  }
+
+  // 从错误响应中提取服务端错误信息（如容量不足 code=quota）
+  async function httpError(r) {
+    let msg = "HTTP " + r.status, code = "";
+    try {
+      const j = await r.json();
+      if (j && j.error) msg = j.error;
+      if (j && j.code) code = j.code;
+    } catch (_) {}
+    const e = new Error(msg);
+    e.status = r.status;
+    e.code = code;
+    return e;
   }
 
   // 带实时上传进度的 XHR（fetch 拿不到上传进度，必须用 XMLHttpRequest）
@@ -120,7 +135,14 @@
           try { j = JSON.parse(xhr.responseText || "{}"); } catch (_) {}
           resolve(j);
         } else {
-          reject(new Error("HTTP " + xhr.status));
+          let msg = "HTTP " + xhr.status, code = "";
+          try {
+            const j = JSON.parse(xhr.responseText || "{}");
+            if (j.error) msg = j.error;
+            if (j.code) code = j.code;
+          } catch (_) {}
+          const e = new Error(msg); e.code = code;
+          reject(e);
         }
       };
       xhr.onerror = () => reject(new Error("网络中断"));
@@ -148,8 +170,12 @@
     try {
       const r = await fetch("/api/me");
       const j = await r.json();
-      if (j.authenticated) { showApp(); await loadList(""); }
-      else showLogin();
+      if (j.authenticated) {
+        showApp();
+        loadQuota();
+        await loadList("");
+        if (j.mustChange) openForceModal();   // 首次登录强制改密
+      } else showLogin();
     } catch (_) { showLogin(); }
 
     if ("serviceWorker" in navigator) {
@@ -157,7 +183,12 @@
     }
   }
 
-  function showLogin() { $("#login").classList.remove("hidden"); $("#app").classList.add("hidden"); }
+  function showLogin() {
+    $("#login").classList.remove("hidden");
+    $("#app").classList.add("hidden");
+    closeForceModal();
+    closeSettings();
+  }
   function showApp() { $("#login").classList.add("hidden"); $("#app").classList.remove("hidden"); }
 
   $("#login-form").addEventListener("submit", async (e) => {
@@ -170,8 +201,18 @@
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: pw }),
       });
-      if (res.ok) { $("#login-error").textContent = ""; await boot(); }
-      else { const j = await res.json().catch(() => ({})); $("#login-error").textContent = j.error || "登录失败"; }
+      if (res.ok) {
+        $("#login-error").textContent = "";
+        $("#password").value = "";
+        const j = await res.json();
+        showApp();
+        loadQuota();
+        await loadList("");
+        if (j.mustChange) openForceModal();   // 初始密码未修改 → 强制弹窗
+      } else {
+        const j = await res.json().catch(() => ({}));
+        $("#login-error").textContent = j.error || "登录失败";
+      }
     } finally {
       btn.disabled = false; btn.textContent = "登 录";
     }
@@ -182,6 +223,127 @@
     state.selected.clear(); state.currentPath = "";
     showLogin();
   });
+
+  /* ---------------- 云盘容量（顶栏徽章 + 设置菜单） ---------------- */
+  async function loadQuota() {
+    try {
+      const r = await fetch("/api/quota");
+      if (!r.ok) return;
+      const j = await r.json();
+      state.quota = j;
+      renderQuotaBadge(j);
+      if (!$("#settings-modal").classList.contains("hidden")) renderSettingsQuota(j);
+    } catch (_) {}
+  }
+
+  function renderQuotaBadge(q) {
+    const el = $("#quota-badge");
+    if (!q.quota) { el.textContent = `💾 已用 ${fmtSize(q.used)}`; el.classList.remove("warn"); return; }
+    const free = Math.max(0, q.quota - q.used);
+    el.textContent = `💾 剩余 ${fmtSize(free)} / ${fmtSize(q.quota)}`;
+    el.classList.toggle("warn", q.used / q.quota >= 0.9);
+    el.title = `已用 ${fmtSize(q.used)}，总容量 ${fmtSize(q.quota)}（磁盘总容量 ${fmtSize(q.diskTotal)}）`;
+  }
+
+  /* ---------------- 设置二级菜单 ---------------- */
+  function openSettings() {
+    $("#st-msg").textContent = ""; $("#st-msg").className = "st-msg";
+    $("#st-oldpw").value = $("#st-newpw").value = $("#st-newpw2").value = "";
+    $("#st-quota-input").value = "";
+    renderSettingsQuota(state.quota);
+    $("#settings-modal").classList.remove("hidden");
+  }
+  function closeSettings() { $("#settings-modal").classList.add("hidden"); }
+
+  function renderSettingsQuota(q) {
+    if (!q) return;
+    const bar = $("#st-quota-bar"), txt = $("#st-quota-text"), hint = $("#st-quota-hint");
+    const maxQ = Math.floor(q.diskTotal * 0.9);
+    if (!q.quota) {
+      bar.style.width = "0%"; bar.classList.remove("warn");
+      txt.textContent = `已用 ${fmtSize(q.used)} · 未设容量上限（磁盘总容量 ${fmtSize(q.diskTotal)}）`;
+    } else {
+      const pct = Math.min(100, (q.used / q.quota) * 100);
+      bar.style.width = pct + "%";
+      bar.classList.toggle("warn", pct >= 90);
+      txt.textContent = `已用 ${fmtSize(q.used)} / ${fmtSize(q.quota)}（${pct.toFixed(1)}%）· 剩余 ${fmtSize(Math.max(0, q.quota - q.used))}`;
+    }
+    hint.textContent = `云盘容量上限为磁盘总容量的 90%（约 ${fmtSize(maxQ)}），当前磁盘总容量 ${fmtSize(q.diskTotal)}`;
+  }
+
+  $("#btn-settings").addEventListener("click", openSettings);
+  $("#st-close").addEventListener("click", closeSettings);
+  $("#settings-modal").addEventListener("click", (e) => { if (e.target.id === "settings-modal") closeSettings(); });
+
+  $("#st-quota-btn").addEventListener("click", async () => {
+    const gb = parseFloat($("#st-quota-input").value);
+    const msg = $("#st-msg");
+    if (!isFinite(gb) || gb <= 0) { msg.textContent = "请输入有效的容量（GB）"; msg.className = "st-msg err"; return; }
+    const bytes = Math.round(gb * 1024 ** 3);
+    const r = await fetch("/api/quota", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quota: bytes }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) {
+      msg.textContent = "云盘容量已更新"; msg.className = "st-msg ok";
+      state.quota.quota = j.quota;
+      renderSettingsQuota(state.quota);
+      renderQuotaBadge(state.quota);
+      toast(`云盘容量已设为 ${fmtSize(j.quota)}`);
+    } else {
+      msg.textContent = j.error || "设置失败"; msg.className = "st-msg err";
+    }
+  });
+
+  // 修改密码（设置菜单内）：成功后服务端已登出 → 回登录页重新登录
+  $("#st-pw-btn").addEventListener("click", () => doChangePassword({
+    old: $("#st-oldpw"), nw: $("#st-newpw"), nw2: $("#st-newpw2"), msg: $("#st-msg"),
+  }));
+
+  /* ---------------- 首次登录强制修改密码 ---------------- */
+  function openForceModal() {
+    $("#fc-oldpw").value = $("#fc-newpw").value = $("#fc-newpw2").value = "";
+    $("#fc-msg").textContent = ""; $("#fc-msg").className = "st-msg";
+    $("#force-modal").classList.remove("hidden");
+    setTimeout(() => $("#fc-oldpw").focus(), 120);
+  }
+  function closeForceModal() { $("#force-modal").classList.add("hidden"); }
+
+  $("#fc-btn").addEventListener("click", async () => {
+    const ok = await doChangePassword({
+      old: $("#fc-oldpw"), nw: $("#fc-newpw"), nw2: $("#fc-newpw2"), msg: $("#fc-msg"),
+    });
+    if (ok) {
+      closeForceModal();
+      await fetch("/api/logout", { method: "POST" });
+      state.selected.clear(); state.currentPath = "";
+      showLogin();
+      toast("密码修改成功，请用新密码重新登录");
+    }
+  });
+
+  async function doChangePassword(els) {
+    const msg = els.msg;
+    const oldPw = els.old.value, nw = els.nw.value, nw2 = els.nw2.value;
+    msg.textContent = ""; msg.className = "st-msg";
+    if (!oldPw) { msg.textContent = "请输入当前密码"; msg.className = "st-msg err"; return false; }
+    if (nw.length < 6) { msg.textContent = "新密码至少 6 位"; msg.className = "st-msg err"; return false; }
+    if (nw !== nw2) { msg.textContent = "两次输入的新密码不一致"; msg.className = "st-msg err"; return false; }
+    try {
+      const r = await fetch("/api/password", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ oldPassword: oldPw, newPassword: nw }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) return true;
+      msg.textContent = j.error || "修改失败"; msg.className = "st-msg err";
+      return false;
+    } catch (e) {
+      msg.textContent = "网络错误：" + e.message; msg.className = "st-msg err";
+      return false;
+    }
+  }
 
   /* ---------------- 列表 ---------------- */
   async function loadList(rel) {
@@ -320,7 +482,7 @@
           exitSearch();
           loadList(target);
         } else {
-          previewFile(rel, it.name);
+          previewFile(rel, it.name, it.size);
         }
       };
       row.appendChild(meta);
@@ -338,7 +500,7 @@
         if (!confirm(`确定删除「${it.name}」？此操作不可恢复。`)) return;
         await fetch("/api/delete", { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ paths: [rel] }) });
-        toast("已删除"); loadList(state.currentPath);
+        toast("已删除"); loadList(state.currentPath); loadQuota();
       };
       acts.appendChild(del);
       row.appendChild(acts);
@@ -477,6 +639,11 @@
       return { ok: true };
     } catch (e) {
       // 失败不清理服务端已收分片，下次重选同一文件自动从断点继续
+      if (e.code === "quota") {
+        item.fail("云盘容量不足，上传已停止");
+        uploadFiles.quotaHit = true;
+        return { ok: false, quota: true };
+      }
       item.fail(`失败（${e.message}）。已保留进度，重新选择同一文件将自动续传`);
       return { ok: false, err: e };
     }
@@ -488,9 +655,18 @@
     let ok = 0, skip = 0, fail = 0;
     for (const f of files) {
       const r = await uploadOne(f);
+      if (r.quota) break;               // 容量不足：停止后续上传，弹出设置
       if (r.skipped) skip++; else if (r.ok) ok++; else fail++;
     }
     loadList(state.currentPath);
+    loadQuota();   // 上传后刷新容量显示
+    if (uploadFiles.quotaHit) {
+      uploadFiles.quotaHit = false;
+      toast("云盘容量不足，请点右上角「⚙️ 设置」增加云盘容量");
+      const p = $("#upload-panel"); p.classList.add("hidden"); $("#up-list").innerHTML = "";
+      openSettings();
+      return;
+    }
     let msg = `上传完成：成功 ${ok}`;
     if (skip) msg += `，跳过 ${skip}`;
     if (fail) msg += `，失败 ${fail}`;
@@ -525,10 +701,11 @@
   });
 
   /* ---------------- 文件预览 ---------------- */
+  // 高亮 / Markdown 库已本地化到 static/vendor/，不再依赖 CDN（大陆网络下 jsdelivr 经常加载失败导致代码不着色）
   const PV_LIB = {
-    marked: "https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js",
-    hljs: "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js",
-    hljsCss: "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css",
+    marked: "/vendor/marked.min.js",
+    hljs: "/vendor/highlight.min.js",
+    hljsCss: "/vendor/github-dark.min.css",
   };
   function loadScript(src) {
     return new Promise((res, rej) => {
@@ -557,13 +734,21 @@
   }
   $("#pv-close").addEventListener("click", closePreview);
   $("#preview-modal").addEventListener("click", (e) => { if (e.target.id === "preview-modal") closePreview(); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#preview-modal").classList.contains("hidden")) closePreview(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!$("#force-modal").classList.contains("hidden")) return;   // 强制改密弹窗不可 Esc 关闭
+    if (!$("#preview-modal").classList.contains("hidden")) closePreview();
+    if (!$("#settings-modal").classList.contains("hidden")) closeSettings();
+  });
 
-  function previewFile(rel, name) {
+  function previewFile(rel, name, size) {
     const ext = (String(name).split(".").pop() || "").toLowerCase();
     const src = "/api/download?inline=1&path=" + encodeURIComponent(rel);
     const body = $("#pv-body");
     $("#pv-title").textContent = name;
+    $("#pv-title").title = name;
+    $("#pv-ico").textContent = kindOf(name, "file").icon;
+    $("#pv-size").textContent = size !== undefined ? fmtSize(size) : "";
     $("#pv-download").onclick = () => downloadFile(rel, name);
     body.innerHTML = "";
     $("#preview-modal").classList.remove("hidden");
@@ -702,7 +887,7 @@
     if (!confirm(`确定删除选中的 ${list.length} 项？不可恢复。`)) return;
     const r = await fetch("/api/delete", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths: list }) });
-    if (r.ok) { toast("已删除"); loadList(state.currentPath); }
+    if (r.ok) { toast("已删除"); loadList(state.currentPath); loadQuota(); }
     else toast("删除失败");
   });
 

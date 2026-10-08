@@ -9,8 +9,6 @@
 #   bash manage.sh status         查看状态
 #   bash manage.sh password       重置登录密码（只更新哈希）
 #   bash manage.sh password -p 新密码
-#   bash manage.sh root           更改文件根目录
-#   bash manage.sh root /new/path
 # ============================================================
 set -u
 
@@ -157,23 +155,6 @@ svc_password() {
   ok "密码已重置并重启服务"
 }
 
-# ---------------- 更改根目录 ----------------
-svc_root() {
-  load_env
-  local root="$2"
-  if [ -z "$root" ]; then
-    printf "当前根目录: ${C_B}${CFM_ROOT:-未设置}${C_0}\n"
-    printf "输入新根目录（绝对路径）: "
-    if [ -e /dev/tty ]; then read -r root < /dev/tty || root=""; else read -r root || root=""; fi
-  fi
-  [ -z "$root" ] && { err "路径不能为空"; return 1; }
-  mkdir -p "$root" || { err "无法创建目录 $root"; return 1; }
-  upsert_env "CFM_ROOT" "$root"
-  info "CFM_ROOT 已更新为 $root"
-  svc_restart
-  ok "文件根目录已切换并重启服务"
-}
-
 # ---------------- 入口 ----------------
 case "${1:-}" in
   start)    svc_start ;;
@@ -181,16 +162,14 @@ case "${1:-}" in
   restart)  svc_restart ;;
   status)   svc_status ;;
   password) svc_password "$@" ;;
-  root)     svc_root "$@" ;;
   *)
     printf "私人云盘服务管理\n\n"
     printf "用法: bash manage.sh <命令>\n\n"
-    printf "  start              启动服务\n"
-    printf "  stop               停止服务\n"
-    printf "  restart            重启服务\n"
-    printf "  status             查看状态\n"
+    printf "  start                 启动服务\n"
+    printf "  stop                  停止服务\n"
+    printf "  restart               重启服务\n"
+    printf "  status                查看状态\n"
     printf "  password [-p 新密码]  重置登录密码（只保存哈希）\n"
-    printf "  root [新路径]        更改文件根目录\n"
     [ "${1:-}" != "" ] && { err "未知命令: $1"; exit 1; }
     ;;
 esac

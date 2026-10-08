@@ -2,15 +2,16 @@
 # ============================================================
 # 私人云盘 (cloud-file-manager) — 一键安装/初始化脚本
 #
-# 一行部署（任意 Linux 云服务器执行）：
+# 一行部署（先在服务器上创建并进入一个空目录，再执行）：
+#   mkdir -p /home/xxx/cloud && chmod 777 /home/xxx/cloud && cd /home/xxx/cloud
 #   curl -fsSL https://raw.githubusercontent.com/lujinzhu/cloud-file-manager/main/scripts/install.sh | bash
 #
 # 交互输入通过 /dev/tty 读取，因此 curl | bash 也能正常提问。
 # 会做以下事情：
 #   1. 检测 python3（缺失时询问是否安装，拒绝则退出）
 #   2. 检测 pip3 / Flask（安装前询问）
-#   3. 下载源码（若当前不在项目目录）
-#   4. 生成 .env（密码仅保存 PBKDF2 哈希；未设置的项用默认值）
+#   3. 下载源码到【当前目录】（项目所有文件都放在这里，便于统一管理与一键卸载）
+#   4. 生成 .env（密码仅保存 PBKDF2 哈希；云盘容量默认取磁盘总容量的 80% 并取整）
 #   5. 可选安装 systemd 常驻服务（改动系统，先询问）
 # ============================================================
 set -u
@@ -23,7 +24,8 @@ TARBALLS=(
   "https://ghfast.top/$REPO/archive/refs/heads/main.tar.gz"
   "https://gh-proxy.com/$REPO/archive/refs/heads/main.tar.gz"
 )
-INSTALL_DIR="${CFM_INSTALL_DIR:-$HOME/cloud-file-manager}"
+# 安装目录固定为【当前目录】：保证项目所有文件都在用户创建的这个文件夹下
+INSTALL_DIR="$(pwd)"
 ITER=60000
 
 C_G="\033[32m"; C_Y="\033[33m"; C_R="\033[31m"; C_B="\033[36m"; C_0="\033[0m"
@@ -70,6 +72,16 @@ import sys, hashlib, secrets
 pw, it = sys.argv[1], int(sys.argv[2])
 salt = secrets.token_hex(16)
 print(salt, hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt), it).hex())
+PYEOF
+}
+
+default_quota() { # 当前目录所在磁盘总容量的 80%，向下取整（>=1GB 按整 GB，否则按整 100MB）
+  python3 - "$PROJECT_DIR" <<'PYEOF'
+import sys, shutil
+t = shutil.disk_usage(sys.argv[1]).total
+q = int(t * 0.8)
+GB, MB = 1024 ** 3, 1024 ** 2
+print(int(q // GB) * GB if q >= GB else int(q // (100 * MB)) * 100 * MB)
 PYEOF
 }
 
@@ -146,8 +158,10 @@ if [ -f "./server.py" ] && [ -f "./scripts/manage.sh" ]; then
   PROJECT_DIR="$(pwd)"
   ok "检测到当前目录已是项目目录：$PROJECT_DIR"
 else
-  info "源码将下载到：$INSTALL_DIR"
-  [ -d "$INSTALL_DIR" ] && warn "目录已存在，将覆盖更新"
+  info "源码将下载到当前目录：$INSTALL_DIR"
+  if [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+    warn "当前目录不是空目录，下载的文件会与现有内容混在一起"
+  fi
   mkdir -p "$INSTALL_DIR"
   DL_OK=0
   for src in "${TARBALLS[@]}"; do
@@ -181,9 +195,8 @@ else
 fi
 
 if [ "${KEEP_ENV:-0}" != "1" ]; then
-  # 4.1 共享根目录
-  CFM_ROOT_INPUT=$(ask "文件根目录（存放你文件的文件夹，回车=默认 \$PROJECT_DIR/cloud-files）: " "")
-  CFM_ROOT_VAL="${CFM_ROOT_INPUT:-$PROJECT_DIR/cloud-files}"
+  # 4.1 共享根目录：固定放在项目目录下，保证所有相关文件都在用户创建的这个文件夹里
+  CFM_ROOT_VAL="$PROJECT_DIR/cloud-files"
   mkdir -p "$CFM_ROOT_VAL"
 
   # 4.2 端口
@@ -204,6 +217,10 @@ if [ "${KEEP_ENV:-0}" != "1" ]; then
   # 4.4 会话密钥
   CFM_SECRET_VAL=$(python3 -c "import secrets;print(secrets.token_hex(32))")
 
+  # 4.5 云盘总容量：默认取当前磁盘总容量的 80%（自动取整）
+  QUOTA_VAL=$(default_quota)
+  info "云盘总容量默认设为磁盘的 80%：$(python3 -c "print(f'{$QUOTA_VAL/1024**3:.1f} GB')" 2>/dev/null || echo "$QUOTA_VAL 字节")（可在网页「设置」中调整，上限为磁盘的 90%）"
+
   # 写 .env
   cat > "$ENV_FILE" <<EOF
 # 私人云盘配置（由 install.sh 生成）
@@ -211,15 +228,17 @@ if [ "${KEEP_ENV:-0}" != "1" ]; then
 CFM_ROOT=$CFM_ROOT_VAL
 CFM_PASSWORD_HASH=$PW_HASH
 CFM_PASSWORD_SALT=$PW_SALT
+CFM_PWD_CHANGED=0
 CFM_HOST=0.0.0.0
 CFM_PORT=$CFM_PORT_INPUT
 CFM_SECRET=$CFM_SECRET_VAL
 CFM_CHUNK_SIZE=1048576
 CFM_UPLOAD_TTL=86400
+CFM_QUOTA=$QUOTA_VAL
 EOF
   chmod 600 "$ENV_FILE"
 
-  # 4.5 展示环境变量（密码明文只在本次展示一次）
+  # 4.6 展示环境变量（密码明文只在本次展示一次）
   printf "\n${C_G}———— 环境变量已写入 $ENV_FILE ————${C_0}\n"
   printf "  ${C_B}CFM_ROOT${C_0}            = %s\n" "$CFM_ROOT_VAL"
   printf "  ${C_B}CFM_PASSWORD${C_0}        = %s   ${C_Y}← 请立即记下，仅展示这一次${C_0}\n" "$CFM_PW_INPUT"
@@ -230,6 +249,16 @@ EOF
   printf "  ${C_B}CFM_SECRET${C_0}          = %s…（随机生成）\n" "$(echo "$CFM_SECRET_VAL" | head -c 24)"
   printf "  ${C_B}CFM_CHUNK_SIZE${C_0}      = 1048576 (1MB)\n"
   printf "  ${C_B}CFM_UPLOAD_TTL${C_0}      = 86400 (24小时)\n"
+  printf "  ${C_B}CFM_QUOTA${C_0}           = %s（云盘总容量，字节）\n" "$QUOTA_VAL"
+fi
+
+# 老部署升级：补写 CFM_QUOTA / CFM_PWD_CHANGED（保留现有配置时）
+if [ -f "$ENV_FILE" ] && ! grep -q '^CFM_QUOTA=' "$ENV_FILE" 2>/dev/null; then
+  upsert_env "CFM_QUOTA" "$(default_quota)"
+  info "已为现有配置补充默认云盘容量（CFM_QUOTA，磁盘的 80%）"
+fi
+if [ -f "$ENV_FILE" ] && ! grep -q '^CFM_PWD_CHANGED=' "$ENV_FILE" 2>/dev/null; then
+  upsert_env "CFM_PWD_CHANGED" "0"
 fi
 
 # ---------------- 5. systemd（可选，改系统先询问） ----------------

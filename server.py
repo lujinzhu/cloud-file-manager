@@ -16,8 +16,9 @@
     3) python3 server.py
 
 接口一览：
-    - 鉴权：      /api/login, /api/logout, /api/me
+    - 鉴权：      /api/login, /api/logout, /api/me, /api/password（网页端改密码）
     - 文件操作：  /api/list, /api/upload, /api/download, /api/mkdir, /api/delete, /api/search
+    - 容量配额：  /api/quota（GET 查询 / POST 扩容，上限为磁盘总容量的 90%）
     - 断点续传：  /api/upload_status, /api/upload_chunk, /api/upload_finalize, /api/upload_abort
 
 安全提示：
@@ -79,6 +80,9 @@ SECRET_KEY = os.environ.get("CFM_SECRET", secrets.token_hex(16))
 CHUNK_SIZE = int(os.environ.get("CFM_CHUNK_SIZE", 1024 * 1024))    # 续传分片大小，默认 1MB
 UPLOAD_TTL = int(os.environ.get("CFM_UPLOAD_TTL", 24 * 3600))      # 上传会话保留时长
 SEARCH_LIMIT = int(os.environ.get("CFM_SEARCH_LIMIT", "300"))      # 搜索结果上限
+QUOTA = int(os.environ.get("CFM_QUOTA", "0"))                      # 云盘总容量（字节），0=不限
+PWD_CHANGED = os.environ.get("CFM_PWD_CHANGED", "0") == "1"        # 是否已修改过初始密码
+ENV_PATH = os.path.join(BASE_DIR, ".env")                          # 配置写回目标
 
 # 标准库 mimetypes 缺失的常见类型，主动补充，保证预览时浏览器能正确渲染
 _EXTRA_MIMES = {
@@ -119,6 +123,39 @@ def verify_password(input_pw):
         except Exception:
             return False
     return (input_pw or "") == PASSWORD
+
+
+def update_env_file(updates):
+    """把若干 KEY=VALUE 写回 .env（存在则替换，不存在则追加），供网页端改密码/扩容使用。"""
+    lines = []
+    if os.path.isfile(ENV_PATH):
+        try:
+            with open(ENV_PATH, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+    done = set()
+    out = []
+    for ln in lines:
+        k = ln.split("=", 1)[0].strip() if ("=" in ln and not ln.lstrip().startswith("#")) else None
+        if k in updates:
+            out.append(f"{k}={updates[k]}\n")
+            done.add(k)
+        else:
+            out.append(ln)
+    for k, v in updates.items():
+        if k not in done:
+            if out and not out[-1].endswith("\n"):
+                out[-1] += "\n"
+            out.append(f"{k}={v}\n")
+    tmp = ENV_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.writelines(out)
+    os.replace(tmp, ENV_PATH)
+    try:
+        os.chmod(ENV_PATH, 0o600)
+    except OSError:
+        pass
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 app.secret_key = SECRET_KEY
@@ -187,13 +224,55 @@ def cleanup_stale_uploads():
 cleanup_stale_uploads()
 
 
+# ----------------------------- 容量配额 -----------------------------
+_used_cache = {"ts": 0.0, "bytes": 0}
+USED_TTL = 30  # 已用容量缓存秒数，避免每次上传都递归扫盘
+
+
+def used_bytes():
+    """ROOT 下已存文件的总字节数（含续传分片临时目录），带 TTL 缓存。"""
+    now = time.time()
+    if now - _used_cache["ts"] < USED_TTL:
+        return _used_cache["bytes"]
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(str(ROOT)):
+        for fn in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, fn))
+            except OSError:
+                pass
+    _used_cache["ts"] = now
+    _used_cache["bytes"] = total
+    return total
+
+
+def invalidate_used():
+    """文件落盘/删除后使缓存失效，下次查询重新统计。"""
+    _used_cache["ts"] = 0.0
+
+
+def quota_exceeded(additional):
+    """新增 additional 字节是否超过云盘容量。QUOTA<=0 表示不限。"""
+    if QUOTA <= 0:
+        return False
+    return used_bytes() + additional > QUOTA
+
+
+def quota_error_response():
+    return jsonify(
+        ok=False,
+        error="云盘容量不足，请在「设置」中增加云盘容量",
+        code="quota",
+    ), 403
+
+
 # ----------------------------- 鉴权 -----------------------------
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or {}
     if verify_password(data.get("password", "")):
         session["auth"] = True
-        return jsonify(ok=True)
+        return jsonify(ok=True, mustChange=not PWD_CHANGED)
     return jsonify(ok=False, error="密码错误"), 401
 
 
@@ -205,7 +284,77 @@ def logout():
 
 @app.route("/api/me")
 def me():
-    return jsonify(authenticated=bool(session.get("auth")))
+    return jsonify(
+        authenticated=bool(session.get("auth")),
+        mustChange=(bool(session.get("auth")) and not PWD_CHANGED),
+    )
+
+
+# ----------------------------- 修改密码（网页端） -----------------------------
+@app.route("/api/password", methods=["POST"])
+@login_required
+def change_password():
+    global PASSWORD_HASH, PASSWORD_SALT, PWD_CHANGED
+    data = request.get_json(silent=True) or {}
+    if not verify_password(data.get("oldPassword", "")):
+        return jsonify(ok=False, error="旧密码错误"), 400
+    new = str(data.get("newPassword", ""))
+    if len(new) < 6:
+        return jsonify(ok=False, error="新密码至少 6 位"), 400
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac(
+        "sha256", new.encode("utf-8"), bytes.fromhex(salt), PBKDF2_ITERATIONS
+    ).hex()
+    PASSWORD_HASH, PASSWORD_SALT, PWD_CHANGED = h, salt, True
+    try:
+        update_env_file({
+            "CFM_PASSWORD_HASH": h,
+            "CFM_PASSWORD_SALT": salt,
+            "CFM_PWD_CHANGED": "1",
+        })
+    except Exception as e:
+        print(f"[警告] 写回 .env 失败（本次运行内仍生效，重启后回退）：{e}")
+    session.clear()  # 修改成功后强制重新登录
+    return jsonify(ok=True, relogin=True)
+
+
+# ----------------------------- 云盘容量 -----------------------------
+@app.route("/api/quota", methods=["GET"])
+@login_required
+def quota_info():
+    du = shutil.disk_usage(str(ROOT))
+    return jsonify(
+        ok=True,
+        used=used_bytes(),
+        quota=QUOTA if QUOTA > 0 else None,
+        diskTotal=du.total,
+        diskFree=du.free,
+    )
+
+
+@app.route("/api/quota", methods=["POST"])
+@login_required
+def set_quota():
+    global QUOTA
+    data = request.get_json(silent=True) or {}
+    try:
+        nb = int(data.get("quota"))
+    except (TypeError, ValueError):
+        abort(400, "参数错误")
+    du = shutil.disk_usage(str(ROOT))
+    max_q = int(du.total * 0.9)  # 云盘容量最多为磁盘总容量的 90%
+    if nb <= 0:
+        abort(400, "容量必须大于 0")
+    if nb > max_q:
+        return jsonify(ok=False, error=f"云盘容量不能超过磁盘总容量的 90%（约 {max_q // (1024**3)} GB）"), 400
+    if nb < used_bytes():
+        return jsonify(ok=False, error="云盘容量不能小于当前已用容量"), 400
+    QUOTA = nb
+    try:
+        update_env_file({"CFM_QUOTA": str(nb)})
+    except Exception as e:
+        print(f"[警告] 写回 .env 失败（本次运行内仍生效，重启后回退）：{e}")
+    return jsonify(ok=True, quota=QUOTA)
 
 
 @app.route("/")
@@ -289,8 +438,11 @@ def upload():
             name = clean_name(f.filename)
             if not name:
                 continue
+            if quota_exceeded(f.content_length or 0):
+                return quota_error_response()
             f.save(str(base / name))
             saved.append(name)
+    invalidate_used()
     return jsonify(ok=True, saved=saved)
 
 
@@ -312,6 +464,10 @@ def upload_status():
     dest = base / name
     if dest.is_file() and size > 0 and dest.stat().st_size == size:
         return jsonify(ok=True, done=True, name=name)
+
+    # 容量校验：文件总大小超过剩余云盘容量时直接拒绝（提示玩家去设置里扩容）
+    if quota_exceeded(size):
+        return quota_error_response()
 
     uid = session_key(rel, name, size, mtime)
     d = UPLOAD_DIR / uid
@@ -378,6 +534,7 @@ def upload_finalize():
         for i in range(total):
             out.write((d / ("part_" + str(i))).read_bytes())
     shutil.rmtree(str(d), ignore_errors=True)
+    invalidate_used()
     return jsonify(ok=True, name=meta["name"])
 
 
@@ -475,6 +632,7 @@ def delete():
                 shutil.rmtree(p)
             else:
                 p.unlink()
+    invalidate_used()
     return jsonify(ok=True)
 
 

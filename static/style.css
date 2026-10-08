@@ -302,7 +302,7 @@ body {
 .search-input {
   width: 200px; padding: 8px 30px 8px 12px;
   border: 1px solid var(--border); border-radius: 10px;
-  background: var(--card); color: var(--text); font-size: 13px; outline: none;
+  background: var(--panel); color: var(--text); font-size: 13px; outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
 .search-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.15); }
@@ -312,39 +312,125 @@ body {
 }
 .sort-select {
   padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px;
-  background: var(--card); color: var(--text); font-size: 13px; outline: none; cursor: pointer;
+  background: var(--panel); color: var(--text); font-size: 13px; outline: none; cursor: pointer;
 }
 .sort-dir { padding: 8px 12px !important; font-weight: 700; }
 .sub .loc { color: #6366f1; margin-right: 6px; font-size: 11px; }
 
-/* ---------- 预览模态框 ---------- */
+/* ---------- 顶栏容量徽章 ---------- */
+.quota-badge {
+  display: inline-flex; align-items: center;
+  padding: 6px 11px; border-radius: 10px; font-size: 12.5px;
+  color: #fff; background: rgba(255, 255, 255, .14);
+  border: 1px solid rgba(255, 255, 255, .3);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.quota-badge.warn { background: rgba(243, 30, 79, .32); border-color: rgba(255, 200, 210, .55); }
+
+/* ---------- 通用弹窗（设置 / 强制改密） ---------- */
+.modal-mask {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(10, 12, 22, .55); backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center; padding: 18px;
+}
+.modal-mask.hidden { display: none; }
+.modal-top { z-index: 95; }   /* 强制改密压在所有弹窗之上 */
+.modal-card {
+  width: min(400px, 94vw); max-height: 88vh; overflow-y: auto;
+  background: var(--panel); border-radius: var(--r-l);
+  box-shadow: var(--shadow-l); padding: 6px 0 14px;
+  animation: pop .25s cubic-bezier(.2, .9, .3, 1.1);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px 10px; border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.modal-title { font-weight: 700; font-size: 16px; }
+.pv-x {
+  border: 1px solid var(--border); background: #f6f7fb; color: var(--muted);
+  width: 30px; height: 30px; border-radius: 9px; cursor: pointer;
+  font-size: 14px; line-height: 1; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s, color .15s, transform .1s;
+}
+.pv-x:hover { background: #ffe4e6; color: var(--danger); transform: scale(1.05); }
+.force-tip {
+  margin: 10px 18px 0; padding: 10px 12px; border-radius: 10px;
+  background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+  font-size: 13px; line-height: 1.55;
+}
+.st-section { padding: 14px 18px 4px; display: flex; flex-direction: column; gap: 10px; }
+.st-h { margin: 0; font-size: 14px; font-weight: 700; color: var(--text); }
+.st-section input {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: 10px; font-size: 14px; outline: none; background: #fbfcfe;
+  transition: border-color .15s, box-shadow .15s;
+}
+.st-section input:focus { border-color: var(--primary-2); box-shadow: 0 0 0 3px rgba(99, 102, 241, .14); }
+.st-row { display: flex; gap: 8px; }
+.st-row input { flex: 1; }
+.st-full { width: 100%; }
+.st-msg { font-size: 13px; min-height: 17px; }
+.st-msg.err { color: var(--danger); }
+.st-msg.ok { color: #059669; }
+.st-hint { font-size: 12px; color: var(--muted); }
+.st-quota-track {
+  height: 10px; border-radius: 99px; background: #eef0f6; overflow: hidden;
+}
+.st-quota-bar {
+  height: 100%; width: 0%; border-radius: 99px;
+  background: linear-gradient(90deg, #818cf8, var(--primary));
+  transition: width .3s ease;
+}
+.st-quota-bar.warn { background: linear-gradient(90deg, #fb923c, #ef4444); }
+.st-quota-text { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ---------- 预览模态框（居中卡片，点遮罩/Esc/✕ 关闭） ---------- */
 .pv-modal {
   position: fixed; inset: 0; z-index: 60;
-  background: rgba(10,12,22,.72); backdrop-filter: blur(4px);
-  display: flex; flex-direction: column; padding: 18px;
+  background: rgba(10, 12, 22, .68); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 22px;
 }
 .pv-modal.hidden { display: none; }
+.pv-card {
+  width: min(920px, 94vw); height: min(82vh, 780px);
+  display: flex; flex-direction: column;
+  background: var(--panel); border-radius: 16px;
+  box-shadow: var(--shadow-l); overflow: hidden;
+  animation: pop .22s cubic-bezier(.2, .9, .3, 1.1);
+}
 .pv-bar {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  background: var(--card); border-radius: 12px 12px 0 0; padding: 10px 16px;
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
+.pv-ico {
+  font-size: 18px; width: 34px; height: 34px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 9px; background: #f1f3f9;
+}
+.pv-head { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .pv-title {
   font-weight: 600; font-size: 14px; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.pv-size { font-size: 11.5px; color: var(--muted); }
 .pv-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .btn.small { padding: 6px 12px; font-size: 13px; }
 .pv-body {
-  flex: 1; background: var(--card); border-radius: 0 0 12px 12px;
+  flex: 1; background: var(--panel);
   overflow: auto; position: relative; min-height: 0;
 }
 .pv-center {
   height: 100%; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 14px; padding: 16px;
 }
-.pv-img { max-width: 96%; max-height: 92%; object-fit: contain; border-radius: 8px; }
-.pv-media { max-width: 96%; max-height: 92%; border-radius: 8px; background: #000; }
+.pv-img { max-width: 94%; max-height: 88%; object-fit: contain; border-radius: 8px; }
+.pv-media { max-width: 94%; max-height: 88%; border-radius: 8px; background: #000; }
 .pv-audio-wrap { display: flex; flex-direction: column; align-items: center; gap: 18px; }
 .pv-audio-ico { font-size: 72px; }
 .pv-audio-wrap .pv-media { width: min(560px, 86vw); }
@@ -354,11 +440,12 @@ body {
 .pv-uns-ico { font-size: 64px; }
 .pv-uns-t { font-size: 15px; }
 .pv-doc {
-  margin: 0; padding: 20px 24px; font-size: 13.5px; line-height: 1.65;
+  margin: 0; padding: 18px 20px; font-size: 13px; line-height: 1.6;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   white-space: pre-wrap; word-break: break-all;
   background: #0d1117; color: #e6edf3; min-height: 100%;
 }
+.pv-doc code.hljs { padding: 0; background: transparent; }
 .pv-doc.md-body {
   font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   white-space: normal;
@@ -385,5 +472,8 @@ body {
   .up-panel { right: 10px; left: 10px; bottom: 10px; width: auto; }
   .up-list { max-height: 38vh; }
   .search-input { width: 130px; }
-  .pv-modal { padding: 8px; }
+  .pv-modal { padding: 10px; }
+  .pv-card { width: 96vw; height: 88vh; border-radius: 12px; }
+  .quota-badge { display: none; }   /* 小屏空间有限，容量信息进设置里看 */
+  .btn#btn-settings { padding: 7px 9px; font-size: 13px; }
 }
