@@ -14,7 +14,36 @@
     items: [],         // 当前目录条目
     selected: new Set(),
     dlDir: null,       // FileSystemDirectoryHandle（桌面浏览器）
+    sortBy: localStorage.getItem("cfm_sortBy") || "name",   // name | time | type
+    sortAsc: (localStorage.getItem("cfm_sortAsc") || "1") === "1",
+    mode: "browse",    // browse | search（搜索结果模式）
+    searchTimer: null,
   };
+
+  /* ---------------- 排序 ---------------- */
+  function typeRank(it) {
+    const k = kindOf(it.name, it.type).cls;
+    const order = ["k-dir", "k-image", "k-video", "k-audio", "k-doc", "k-code", "k-archive", "k-app", "k-other"];
+    return order.indexOf(k);
+  }
+  function sortedItems(items) {
+    const arr = items.slice();
+    const dir = state.sortAsc ? 1 : -1;
+    arr.sort((a, b) => {
+      // 文件夹始终排在最前（升降序都不打散）
+      if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+      let r = 0;
+      if (state.sortBy === "time") r = (a.mtime || 0) - (b.mtime || 0);
+      else if (state.sortBy === "type") r = typeRank(a) - typeRank(b) || a.name.localeCompare(b.name, "zh-CN");
+      else r = a.name.localeCompare(b.name, "zh-CN", { numeric: true });
+      return r * dir;
+    });
+    return arr;
+  }
+  function saveSortPref() {
+    localStorage.setItem("cfm_sortBy", state.sortBy);
+    localStorage.setItem("cfm_sortAsc", state.sortAsc ? "1" : "0");
+  }
 
   /* ---------------- 工具 ---------------- */
   function toast(msg) {
@@ -167,6 +196,65 @@
     renderList();
   }
 
+  /* ---------------- 搜索（递归模糊） ---------------- */
+  function exitSearch() {
+    if (state.mode !== "search") return;
+    state.mode = "browse";
+    $("#search-clear").classList.add("hidden");
+    $("#search-input").value = "";
+  }
+
+  async function runSearch(q) {
+    const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+    if (!r.ok) { toast("搜索失败"); return; }
+    const j = await r.json();
+    state.mode = "search";
+    state.currentPath = "";
+    state.selected.clear();
+    updateSelButtons();
+    state.items = j.results || [];
+    $("#search-clear").classList.remove("hidden");
+
+    // 面包屑显示搜索态
+    const bc = $("#breadcrumb");
+    bc.innerHTML = "";
+    const back = document.createElement("span");
+    back.className = "crumb home";
+    back.textContent = "🏠 返回浏览";
+    back.onclick = () => { exitSearch(); loadList(""); };
+    bc.appendChild(back);
+    const info = document.createElement("span");
+    info.className = "crumb current";
+    info.textContent = `「${q}」${j.truncated ? " 的搜索结果（仅前 " + j.total + " 条）" : " 的搜索结果 " + j.total + " 项"}`;
+    bc.appendChild(info);
+
+    renderList();
+  }
+
+  $("#search-input").addEventListener("input", (e) => {
+    const q = e.target.value.trim();
+    clearTimeout(state.searchTimer);
+    if (!q) { exitSearch(); loadList(state.currentPath || ""); return; }
+    state.searchTimer = setTimeout(() => runSearch(q), 350); // 输入防抖
+  });
+  $("#search-clear").addEventListener("click", () => {
+    exitSearch(); loadList(state.currentPath || "");
+    $("#search-input").focus();
+  });
+
+  /* ---------------- 排序控件 ---------------- */
+  $("#sort-select").value = state.sortBy;
+  $("#sort-dir").textContent = state.sortAsc ? "↑" : "↓";
+  $("#sort-select").addEventListener("change", (e) => {
+    state.sortBy = e.target.value; saveSortPref(); renderList();
+  });
+  $("#sort-dir").addEventListener("click", () => {
+    state.sortAsc = !state.sortAsc;
+    $("#sort-dir").textContent = state.sortAsc ? "↑" : "↓";
+    $("#sort-dir").title = state.sortAsc ? "当前升序，点击切换降序" : "当前降序，点击切换升序";
+    saveSortPref(); renderList();
+  });
+
   function renderBreadcrumb(rel) {
     const bc = $("#breadcrumb");
     bc.innerHTML = "";
@@ -194,13 +282,20 @@
   function renderList() {
     const box = $("#filelist");
     box.innerHTML = "";
-    if (!state.items.length) {
-      box.innerHTML = '<div class="empty"><div class="empty-ico">📭</div><div class="empty-t">这个文件夹是空的</div><div class="empty-s">把文件拖进来，或点上方「上传」</div></div>';
+    const items = sortedItems(state.items);
+    if (!items.length) {
+      box.innerHTML = state.mode === "search"
+        ? '<div class="empty"><div class="empty-ico">🔍</div><div class="empty-t">没有匹配的文件</div><div class="empty-s">换个关键词试试</div></div>'
+        : '<div class="empty"><div class="empty-ico">📭</div><div class="empty-t">这个文件夹是空的</div><div class="empty-s">把文件拖进来，或点上方「上传」</div></div>';
       return;
     }
-    state.items.forEach((it) => {
-      const rel = state.currentPath ? state.currentPath + "/" + it.name : it.name;
+    items.forEach((it) => {
+      const rel = state.mode === "search"
+        ? (it.dir ? it.dir + "/" + it.name : it.name)
+        : (state.currentPath ? state.currentPath + "/" + it.name : it.name);
       const k = kindOf(it.name, it.type);
+      const locTag = state.mode === "search"
+        ? `<span class="loc">📂 /${esc(it.dir || "根目录")}</span>` : "";
 
       const row = document.createElement("div");
       row.className = "row";
@@ -218,8 +313,16 @@
       const meta = document.createElement("div");
       meta.className = "meta";
       meta.innerHTML = `<div class="name">${esc(it.name)}</div>
-        <div class="sub">${it.type === "dir" ? "文件夹" : fmtSize(it.size) + " · " + fmtTime(it.mtime)}</div>`;
-      meta.onclick = () => { if (it.type === "dir") loadList(rel); else downloadFile(rel, it.name); };
+        <div class="sub">${locTag}${it.type === "dir" ? "文件夹" : fmtSize(it.size) + " · " + fmtTime(it.mtime)}</div>`;
+      meta.onclick = () => {
+        if (it.type === "dir") {
+          const target = state.mode === "search" ? rel : rel; // 搜索结果同样进入其真实目录
+          exitSearch();
+          loadList(target);
+        } else {
+          previewFile(rel, it.name);
+        }
+      };
       row.appendChild(meta);
 
       const acts = document.createElement("div");
@@ -392,6 +495,16 @@
     if (skip) msg += `，跳过 ${skip}`;
     if (fail) msg += `，失败 ${fail}`;
     toast(msg);
+
+    // 全部成功（含跳过）后稍等片刻自动收起面板；有失败则保留，方便查看错误
+    if (fail === 0) {
+      clearTimeout(uploadFiles._t);
+      uploadFiles._t = setTimeout(() => {
+        const p = $("#upload-panel");
+        p.classList.add("hidden");
+        $("#up-list").innerHTML = "";
+      }, 2500);
+    }
   }
 
   $("#btn-upload").addEventListener("click", () => $("#file-input").click());
@@ -410,6 +523,98 @@
       uploadFiles(e.dataTransfer.files);
     }
   });
+
+  /* ---------------- 文件预览 ---------------- */
+  const PV_LIB = {
+    marked: "https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js",
+    hljs: "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js",
+    hljsCss: "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css",
+  };
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      if (document.querySelector(`script[data-src="${src}"]`)) return res();
+      const s = document.createElement("script");
+      s.src = src; s.dataset.src = src;
+      s.onload = res; s.onerror = () => rej(new Error("脚本加载失败"));
+      document.head.appendChild(s);
+    });
+  }
+  function loadCss(href) {
+    if (document.querySelector(`link[data-href="${href}"]`)) return;
+    const l = document.createElement("link");
+    l.rel = "stylesheet"; l.href = href; l.dataset.href = href;
+    document.head.appendChild(l);
+  }
+
+  const PV_IMG = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico"];
+  const PV_VIDEO = ["mp4", "webm", "mov", "m4v"];
+  const PV_AUDIO = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"];
+  const PV_TEXT = ["txt", "md", "log", "csv", "json", "js", "ts", "jsx", "tsx", "py", "java", "go", "c", "h", "cpp", "cs", "sh", "bat", "html", "htm", "css", "xml", "yml", "yaml", "ini", "conf", "sql", "lua"];
+
+  function closePreview() {
+    $("#preview-modal").classList.add("hidden");
+    $("#pv-body").innerHTML = ""; // 停止视频/音频播放
+  }
+  $("#pv-close").addEventListener("click", closePreview);
+  $("#preview-modal").addEventListener("click", (e) => { if (e.target.id === "preview-modal") closePreview(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#preview-modal").classList.contains("hidden")) closePreview(); });
+
+  function previewFile(rel, name) {
+    const ext = (String(name).split(".").pop() || "").toLowerCase();
+    const src = "/api/download?inline=1&path=" + encodeURIComponent(rel);
+    const body = $("#pv-body");
+    $("#pv-title").textContent = name;
+    $("#pv-download").onclick = () => downloadFile(rel, name);
+    body.innerHTML = "";
+    $("#preview-modal").classList.remove("hidden");
+
+    if (PV_IMG.includes(ext)) {
+      body.innerHTML = `<div class="pv-center"><img class="pv-img" src="${src}" alt=""></div>`;
+    } else if (PV_VIDEO.includes(ext)) {
+      body.innerHTML = `<div class="pv-center"><video class="pv-media" src="${src}" controls autoplay></video></div>`;
+    } else if (PV_AUDIO.includes(ext)) {
+      body.innerHTML = `<div class="pv-center"><div class="pv-audio-wrap"><div class="pv-audio-ico">🎵</div><audio class="pv-media" src="${src}" controls autoplay></audio></div></div>`;
+    } else if (ext === "pdf") {
+      body.innerHTML = `<iframe class="pv-frame" src="${src}"></iframe>`;
+    } else if (PV_TEXT.includes(ext)) {
+      renderTextPreview(src, ext);
+    } else {
+      body.innerHTML = `<div class="pv-center pv-unsupported">
+        <div class="pv-uns-ico">📦</div>
+        <div class="pv-uns-t">该类型暂不支持在线预览</div>
+        <button class="btn primary" id="pv-dl2">⬇️ 下载该文件</button></div>`;
+      body.querySelector("#pv-dl2").onclick = () => downloadFile(rel, name);
+    }
+  }
+
+  async function renderTextPreview(src, ext) {
+    const body = $("#pv-body");
+    body.innerHTML = `<div class="pv-center pv-loading">加载中…</div>`;
+    try {
+      const r = await fetch(src);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      let text = await r.text();
+      const LIMIT = 2 * 1024 * 1024;
+      if (text.length > LIMIT) text = text.slice(0, LIMIT) + "\n\n…（内容过大，仅显示前 2MB）";
+      loadCss(PV_LIB.hljsCss);
+      if (ext === "md") {
+        await loadScript(PV_LIB.marked);
+        await loadScript(PV_LIB.hljs);
+        body.innerHTML = `<div class="pv-doc md-body"></div>`;
+        const div = body.querySelector(".md-body");
+        div.innerHTML = marked.parse(text);
+        div.querySelectorAll("pre code").forEach((el) => { try { hljs.highlightElement(el); } catch (_) {} });
+      } else {
+        await loadScript(PV_LIB.hljs);
+        body.innerHTML = `<pre class="pv-doc code-body"><code class="hljs"></code></pre>`;
+        const code = body.querySelector("code");
+        code.textContent = text;
+        try { hljs.highlightElement(code); } catch (_) {}
+      }
+    } catch (e) {
+      body.innerHTML = `<div class="pv-center pv-unsupported">预览加载失败：${esc(e.message)}</div>`;
+    }
+  }
 
   /* ---------------- 下载（保持单连接，稳定性优先） ---------------- */
   async function saveToDir(rel, name) {

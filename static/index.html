@@ -40,6 +40,17 @@
     <div class="toolbar">
       <nav id="breadcrumb" class="breadcrumb"></nav>
       <div class="toolbar-actions">
+        <div class="search-wrap">
+          <input id="search-input" class="search-input" type="search"
+                 placeholder="🔍 搜索文件名…" autocomplete="off" />
+          <button id="search-clear" class="search-clear hidden" title="清除搜索">✕</button>
+        </div>
+        <select id="sort-select" class="sort-select" title="排序方式">
+          <option value="name">按名称</option>
+          <option value="time">按时间</option>
+          <option value="type">按类型</option>
+        </select>
+        <button id="sort-dir" class="btn ghost sort-dir" title="切换升序/降序">↑</button>
         <button id="btn-mkdir" class="btn">📁 新建</button>
         <button id="btn-upload" class="btn primary">⬆️ 上传</button>
         <button id="btn-dldown" class="btn" disabled>⬇️ 下载选中</button>
@@ -70,6 +81,18 @@
     <!-- 拖拽上传遮罩 -->
     <div id="drop-overlay" class="drop-overlay">
       <div class="drop-inner">📂 松手即可上传到当前目录</div>
+    </div>
+
+    <!-- 预览模态框 -->
+    <div id="preview-modal" class="pv-modal hidden">
+      <div class="pv-bar">
+        <span id="pv-title" class="pv-title"></span>
+        <div class="pv-actions">
+          <button id="pv-download" class="btn ghost small">⬇️ 下载</button>
+          <button id="pv-close" class="btn ghost small">✕ 关闭</button>
+        </div>
+      </div>
+      <div id="pv-body" class="pv-body"></div>
     </div>
 
     <div id="toast" class="toast"></div>
