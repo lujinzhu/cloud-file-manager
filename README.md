@@ -188,7 +188,13 @@ pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ## 版本说明
 
-### v1.3.0（当前）
+### v1.3.1（当前）
+
+- **强制改密判定修正**：不再依赖标记位，改为登录时把「你输入的密码」与**初始密码哈希**比对——**相同才强制修改，不同就不弹窗**（老部署无初始哈希时回退到 CFM_PWD_CHANGED）
+- 修改密码时校验：**新密码不能与旧密码相同**，也不能改回初始密码
+- `.env` 新增 `CFM_INITIAL_PASSWORD_HASH` / `CFM_INITIAL_PASSWORD_SALT`（install.sh 自动生成，与初始密码哈希一致）
+
+### v1.3.0
 
 - **预览界面改版**：由全屏改为居中卡片式，头部显示文件图标、文件名、大小，带下载与关闭按钮；Esc / 点遮罩 / ✕ 均可关闭，移动端自动全屏化
 - **代码高亮本地化**：highlight.js / marked 内置到 `static/vendor/`，不再依赖 jsdelivr CDN（解决大陆网络下代码不着色的问题）
