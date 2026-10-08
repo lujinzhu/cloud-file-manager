@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#2563eb" />
+  <title>云文件管理器</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- 登录界面 -->
+  <div id="login" class="login-screen">
+    <form id="login-form" class="login-card">
+      <div class="login-logo">☁️</div>
+      <h1>云文件管理器</h1>
+      <p class="login-sub">请输入访问密码</p>
+      <input id="password" type="password" placeholder="密码" autocomplete="current-password" />
+      <button type="submit">登 录</button>
+      <div id="login-error" class="login-error"></div>
+    </form>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="app" class="app hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="logo">☁️ 云盘</span>
+      </div>
+      <div class="topbar-right">
+        <button id="btn-pickdir" class="btn ghost" title="选择下载保存到哪个文件夹（桌面浏览器）">📥 下载目录</button>
+        <button id="btn-logout" class="btn ghost">退出</button>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <nav id="breadcrumb" class="breadcrumb"></nav>
+      <div class="toolbar-actions">
+        <button id="btn-mkdir" class="btn">📁 新建</button>
+        <button id="btn-upload" class="btn primary">⬆️ 上传</button>
+        <button id="btn-dldown" class="btn" disabled>⬇️ 下载选中</button>
+        <button id="btn-del" class="btn danger" disabled>🗑 删除选中</button>
+        <input id="file-input" type="file" multiple hidden />
+      </div>
+    </div>
+
+    <main id="filelist" class="filelist">
+      <div class="empty-hint">加载中…</div>
+    </main>
+
+    <!-- 拖拽上传遮罩 -->
+    <div id="drop-overlay" class="drop-overlay">
+      <div class="drop-inner">📂 松手即可上传到当前目录</div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
