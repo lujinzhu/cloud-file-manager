@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#4f46e5" />
+  <meta name="theme-color" content="#312e81" />
   <title>私人云盘</title>
-  <link rel="manifest" href="/manifest.json" />
-  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="/icon-192.png" />
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <!-- 登录界面 -->
@@ -100,6 +100,8 @@
           </div>
         </div>
         <div id="pv-body" class="pv-body"></div>
+        <!-- 常驻横向滚动条：内容过宽时固定显示在预览底部，无需滚到最下 -->
+        <div id="pv-hbar" class="pv-hbar hidden"><div id="pv-hbar-space" class="pv-hbar-space"></div></div>
       </div>
     </div>
 
@@ -116,11 +118,18 @@
           <h3 class="st-h">💾 云盘容量</h3>
           <div class="st-quota-track"><div id="st-quota-bar" class="st-quota-bar"></div></div>
           <div id="st-quota-text" class="st-quota-text">—</div>
-          <div class="st-row">
-            <input id="st-quota-input" type="number" min="1" step="1" placeholder="新容量（GB）" />
-            <button id="st-quota-btn" class="btn primary">扩容</button>
+          <div id="st-quota-widget">
+            <input id="st-quota-range" class="st-range" type="range" min="0" max="100" step="1" value="0" />
+            <div class="st-scale"><span>当前</span><span id="st-quota-new" class="st-quota-new">—</span><span>上限</span></div>
+            <div class="st-row">
+              <div class="st-inc">
+                <input id="st-quota-input" type="number" min="1" step="1" inputmode="numeric" placeholder="增加容量" />
+                <span class="st-inc-unit">GB</span>
+              </div>
+              <button id="st-quota-btn" class="btn primary">确认扩容</button>
+            </div>
           </div>
-          <div id="st-quota-hint" class="st-hint">最多可设置为磁盘总容量的 90%</div>
+          <div id="st-quota-hint" class="st-hint">—</div>
         </section>
 
         <!-- 修改密码 -->
@@ -155,6 +164,6 @@
     <div id="toast" class="toast"></div>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

@@ -308,6 +308,66 @@ EOF
   fi
 fi
 
+# ---------------- 5.5 nginx 子路径反代（可选，改变系统先询问） ----------------
+# 配置后可用 http://服务器IP/yunpan 访问，无需带端口号
+NGINX_CONF=/etc/nginx/conf.d/yunpan.conf
+setup_nginx() {
+  # Debian/Ubuntu：移除会抢占 80 端口的默认站点；CentOS：去掉 nginx.conf 内置站点的 default_server
+  rm -f /etc/nginx/sites-enabled/default 2>/dev/null
+  if grep -rq "default_server" /etc/nginx/nginx.conf 2>/dev/null; then
+    cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak-cfm 2>/dev/null
+    sed -i 's/listen 80 default_server/listen 80/; s/listen \[::\]:80 default_server/listen [::]:80/' /etc/nginx/nginx.conf
+  fi
+  cat > "$NGINX_CONF" <<'EOF'
+# 私人云盘：/yunpan 反代到本机 8000 端口
+server {
+    listen 80;
+    server_name _;
+
+    location = /yunpan { return 301 /yunpan/; }
+
+    location /yunpan/ {
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        client_max_body_size 0;
+        proxy_request_buffering off;
+    }
+}
+EOF
+  if nginx -t >/dev/null 2>&1; then
+    systemctl enable --now nginx >/dev/null 2>&1 || service nginx start >/dev/null 2>&1
+    systemctl reload nginx >/dev/null 2>&1 || nginx -s reload >/dev/null 2>&1
+    sleep 1
+    if command -v curl >/dev/null 2>&1 && [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1/yunpan/)" = "200" ]; then
+      ok "nginx 子路径配置完成：http://服务器IP/yunpan"
+    else
+      warn "nginx 已配置，但本机自检未通过，请检查其他站点是否抢占 80 端口"
+    fi
+  else
+    warn "nginx 配置校验失败（nginx -t），请检查 $NGINX_CONF"
+  fi
+}
+
+printf "\n"
+if [ -f "$NGINX_CONF" ]; then
+  ok "检测到已有 nginx 子路径配置 /yunpan"
+  if confirm "是否重新生成该配置？"; then
+    if command -v nginx >/dev/null 2>&1; then setup_nginx
+    else err "nginx 未安装，请先安装 nginx"; fi
+  fi
+elif command -v nginx >/dev/null 2>&1; then
+  if confirm "是否配置 nginx 子路径访问（http://服务器IP/yunpan，免端口号）？"; then
+    setup_nginx
+  fi
+else
+  if confirm "未检测到 nginx。是否安装 nginx 并配置 http://服务器IP/yunpan 访问？（改变系统）"; then
+    pkg_install nginx || { err "nginx 安装失败，跳过子路径配置"; }
+    command -v nginx >/dev/null 2>&1 && setup_nginx
+  fi
+fi
+
 # ---------------- 6. 启动 ----------------
 printf "\n"
 if confirm "是否立即启动服务？"; then

@@ -1,8 +1,9 @@
-/* 云文件管理器 - Service Worker（用于 PWA 安装 & 离线壳） */
-const CACHE = "cfm-v1";
+/* 私人云盘 - Service Worker（PWA 离线壳）
+   使用相对路径，兼容任意子路径部署（如 /yunpan/） */
+const CACHE = "cfm-v2";
 const ASSETS = [
-  "/", "/style.css", "/app.js", "/manifest.json",
-  "/icon.svg", "/icon-192.png", "/icon-512.png",
+  "./", "style.css", "app.js", "manifest.json",
+  "icon.svg", "icon-192.png", "icon-512.png",
 ];
 
 self.addEventListener("install", (e) => {
@@ -21,8 +22,9 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
-  if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith("/api/")) return; // 接口永远走网络
+  const SCOPE = self.registration.scope;           // 当前部署子路径，如 "/yunpan/"
+  if (!url.href.startsWith(SCOPE)) return;         // 只管自己作用域内的请求
+  if (url.pathname.startsWith(SCOPE + "api/")) return; // 接口永远走网络
   // 静态资源：缓存优先，失败回源
   e.respondWith(
     caches.match(e.request).then((r) => r || fetch(e.request))

@@ -168,7 +168,7 @@
   /* ---------------- 登录 ---------------- */
   async function boot() {
     try {
-      const r = await fetch("/api/me");
+      const r = await fetch("api/me");
       const j = await r.json();
       if (j.authenticated) {
         showApp();
@@ -179,7 +179,7 @@
     } catch (_) { showLogin(); }
 
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {});
+      navigator.serviceWorker.register("sw.js").catch(() => {});
     }
   }
 
@@ -197,7 +197,7 @@
     const btn = $("#login-form button");
     btn.disabled = true; btn.textContent = "登录中…";
     try {
-      const res = await fetch("/api/login", {
+      const res = await fetch("api/login", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: pw }),
       });
@@ -219,7 +219,7 @@
   });
 
   $("#btn-logout").addEventListener("click", async () => {
-    await fetch("/api/logout", { method: "POST" });
+    await fetch("api/logout", { method: "POST" });
     state.selected.clear(); state.currentPath = "";
     showLogin();
   });
@@ -227,7 +227,7 @@
   /* ---------------- 云盘容量（顶栏徽章 + 设置菜单） ---------------- */
   async function loadQuota() {
     try {
-      const r = await fetch("/api/quota");
+      const r = await fetch("api/quota");
       if (!r.ok) return;
       const j = await r.json();
       state.quota = j;
@@ -257,42 +257,104 @@
 
   function renderSettingsQuota(q) {
     if (!q) return;
+    const GB = 1024 ** 3;
     const bar = $("#st-quota-bar"), txt = $("#st-quota-text"), hint = $("#st-quota-hint");
-    const maxQ = Math.floor(q.diskTotal * 0.9);
-    if (!q.quota) {
-      bar.style.width = "0%"; bar.classList.remove("warn");
-      txt.textContent = `已用 ${fmtSize(q.used)} · 未设容量上限（磁盘总容量 ${fmtSize(q.diskTotal)}）`;
-    } else {
-      const pct = Math.min(100, (q.used / q.quota) * 100);
-      bar.style.width = pct + "%";
-      bar.classList.toggle("warn", pct >= 90);
-      txt.textContent = `已用 ${fmtSize(q.used)} / ${fmtSize(q.quota)}（${pct.toFixed(1)}%）· 剩余 ${fmtSize(Math.max(0, q.quota - q.used))}`;
+    const widget = $("#st-quota-widget");
+    const range = $("#st-quota-range"), input = $("#st-quota-input"),
+          btn = $("#st-quota-btn"), newTxt = $("#st-quota-new");
+    const maxQ = Math.floor(q.diskTotal * 0.9);        // 硬上限：磁盘 90%
+    const curQ = q.quota || Math.ceil(q.used / GB) * GB || GB; // 未设容量时以已用向上取整为起点
+    const maxGB = Math.floor(maxQ / GB);
+
+    // 顶栏进度条
+    const pct = q.quota ? Math.min(100, (q.used / q.quota) * 100) : 0;
+    bar.style.width = pct + "%";
+    bar.classList.toggle("warn", pct >= 90);
+    txt.textContent = q.quota
+      ? `已用 ${fmtSize(q.used)} / ${fmtSize(q.quota)}（${pct.toFixed(1)}%）· 剩余 ${fmtSize(Math.max(0, q.quota - q.used))}`
+      : `已用 ${fmtSize(q.used)} · 未设容量上限（磁盘总容量 ${fmtSize(q.diskTotal)}）`;
+
+    // 滑条范围：当前容量 → 磁盘 90%；已到顶则整体置灰不可扩容
+    if (maxGB <= Math.floor(curQ / GB)) {
+      range.disabled = true; input.disabled = true; btn.disabled = true;
+      widget.classList.add("maxed");
+      newTxt.textContent = "已无可扩容空间";
+      hint.textContent = `云盘容量已达到磁盘总容量的 90%（${fmtSize(maxQ)}）上限，无法继续扩容`;
+      return;
     }
-    hint.textContent = `云盘容量上限为磁盘总容量的 90%（约 ${fmtSize(maxQ)}），当前磁盘总容量 ${fmtSize(q.diskTotal)}`;
+    range.disabled = false; input.disabled = false; btn.disabled = false;
+    widget.classList.remove("maxed");
+    range.min = String(Math.floor(curQ / GB));
+    range.max = String(maxGB);
+    range.step = "1";
+    range.value = range.min;
+    input.value = "";
+    newTxt.textContent = `${Math.floor(curQ / GB)} GB → ${Math.floor(curQ / GB)} GB（+0 GB）`;
+    hint.textContent = `拖动滑条或输入要增加的容量（GB），上限为磁盘总容量的 90%（${maxGB} GB）`;
   }
+
+  // 滑条 ↔ 增量输入框 双向联动（增量语义：当前容量 + 增量）
+  function quotaRangeFill() {
+    const r = $("#st-quota-range");
+    const min = Number(r.min) || 0, max = Number(r.max) || 1;
+    const pct = ((Number(r.value) - min) / (max - min)) * 100;
+    r.style.setProperty("--fill", Math.max(0, Math.min(100, pct)) + "%");
+  }
+  function quotaTargetBytes() {
+    const GB = 1024 ** 3;
+    return Number($("#st-quota-range").value) * GB;
+  }
+  function quotaSyncFromRange() {
+    const GB = 1024 ** 3;
+    const q = state.quota; if (!q) return;
+    const cur = q.quota || Math.ceil(q.used / GB) * GB || GB;
+    const target = quotaTargetBytes();
+    const add = Math.max(0, Math.round((target - cur) / GB));
+    $("#st-quota-input").value = add || "";
+    $("#st-quota-new").textContent =
+      `${Math.floor(cur / GB)} GB → ${Math.floor(target / GB)} GB（+${add} GB）`;
+    quotaRangeFill();
+  }
+  function quotaSyncFromInput() {
+    const GB = 1024 ** 3;
+    const q = state.quota; if (!q) return;
+    const cur = q.quota || Math.ceil(q.used / GB) * GB || GB;
+    const add = parseFloat($("#st-quota-input").value);
+    if (!isFinite(add) || add <= 0) { quotaSyncFromRange(); return; }
+    const target = Math.min(Math.floor(q.diskTotal * 0.9 / GB), Math.floor(cur / GB) + Math.floor(add));
+    $("#st-quota-range").value = String(target);
+    $("#st-quota-new").textContent =
+      `${Math.floor(cur / GB)} GB → ${target} GB（+${Math.max(0, target - Math.floor(cur / GB))} GB）`;
+    quotaRangeFill();
+  }
+  $("#st-quota-range").addEventListener("input", quotaSyncFromRange);
+  $("#st-quota-input").addEventListener("input", quotaSyncFromInput);
 
   $("#btn-settings").addEventListener("click", openSettings);
   $("#st-close").addEventListener("click", closeSettings);
   $("#settings-modal").addEventListener("click", (e) => { if (e.target.id === "settings-modal") closeSettings(); });
 
   $("#st-quota-btn").addEventListener("click", async () => {
-    const gb = parseFloat($("#st-quota-input").value);
     const msg = $("#st-msg");
-    if (!isFinite(gb) || gb <= 0) { msg.textContent = "请输入有效的容量（GB）"; msg.className = "st-msg err"; return; }
-    const bytes = Math.round(gb * 1024 ** 3);
-    const r = await fetch("/api/quota", {
+    const cur = state.quota.quota || 0;
+    const target = quotaTargetBytes();
+    const addGB = parseFloat($("#st-quota-input").value);
+    if (!isFinite(addGB) || addGB <= 0) { msg.textContent = "请输入要增加的容量（GB）"; msg.className = "st-msg err"; return; }
+    if (target <= cur) { msg.textContent = "增加量太小，容量没有变化"; msg.className = "st-msg err"; return; }
+    const r = await fetch("api/quota", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ quota: bytes }),
+      body: JSON.stringify({ quota: target }),
     });
     const j = await r.json().catch(() => ({}));
     if (r.ok) {
-      msg.textContent = "云盘容量已更新"; msg.className = "st-msg ok";
+      msg.textContent = `云盘容量已扩至 ${fmtSize(j.quota)}`; msg.className = "st-msg ok";
       state.quota.quota = j.quota;
       renderSettingsQuota(state.quota);
       renderQuotaBadge(state.quota);
-      toast(`云盘容量已设为 ${fmtSize(j.quota)}`);
+      toast(`云盘容量已扩至 ${fmtSize(j.quota)}`);
     } else {
       msg.textContent = j.error || "设置失败"; msg.className = "st-msg err";
+      loadQuota();  // 服务端校验更严格，回读真实状态
     }
   });
 
@@ -316,7 +378,7 @@
     });
     if (ok) {
       closeForceModal();
-      await fetch("/api/logout", { method: "POST" });
+      await fetch("api/logout", { method: "POST" });
       state.selected.clear(); state.currentPath = "";
       showLogin();
       toast("密码修改成功，请用新密码重新登录");
@@ -331,7 +393,7 @@
     if (nw.length < 6) { msg.textContent = "新密码至少 6 位"; msg.className = "st-msg err"; return false; }
     if (nw !== nw2) { msg.textContent = "两次输入的新密码不一致"; msg.className = "st-msg err"; return false; }
     try {
-      const r = await fetch("/api/password", {
+      const r = await fetch("api/password", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ oldPassword: oldPw, newPassword: nw }),
       });
@@ -350,7 +412,7 @@
     state.currentPath = rel || "";
     state.selected.clear();
     updateSelButtons();
-    const r = await fetch("/api/list?path=" + encodeURIComponent(state.currentPath));
+    const r = await fetch("api/list?path=" + encodeURIComponent(state.currentPath));
     if (!r.ok) { toast("加载失败"); return; }
     const j = await r.json();
     state.items = j.entries || [];
@@ -367,7 +429,7 @@
   }
 
   async function runSearch(q) {
-    const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+    const r = await fetch("api/search?q=" + encodeURIComponent(q));
     if (!r.ok) { toast("搜索失败"); return; }
     const j = await r.json();
     state.mode = "search";
@@ -498,7 +560,7 @@
       del.className = "icon-btn danger"; del.textContent = "🗑"; del.title = "删除";
       del.onclick = async () => {
         if (!confirm(`确定删除「${it.name}」？此操作不可恢复。`)) return;
-        await fetch("/api/delete", { method: "POST", headers: { "Content-Type": "application/json" },
+        await fetch("api/delete", { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ paths: [rel] }) });
         toast("已删除"); loadList(state.currentPath); loadQuota();
       };
@@ -581,7 +643,7 @@
     if (file.size === 0) {
       try {
         const fd = new FormData(); fd.append("file", file, file.name);
-        await withRetry(() => xhrSend("/api/upload?path=" + encodeURIComponent(state.currentPath), fd));
+        await withRetry(() => xhrSend("api/upload?path=" + encodeURIComponent(state.currentPath), fd));
         item.done("完成");
         return { ok: true };
       } catch (e) { item.fail("失败：" + e.message); return { ok: false }; }
@@ -596,7 +658,7 @@
       };
 
       // 1) 询问服务端：能否秒传 / 已收到哪些分片
-      const st = await withRetry(() => postJSON("/api/upload_status", payload));
+      const st = await withRetry(() => postJSON("api/upload_status", payload));
       if (st.done) { item.done("文件已存在，已跳过"); return { skipped: true }; }
 
       const uploadId = st.uploadId;
@@ -622,7 +684,7 @@
         const end = Math.min(file.size, start + chunkSize);
         const blob = file.slice(start, end);
         await withRetry(() =>
-          xhrSend(`/api/upload_chunk?uploadId=${uploadId}&index=${i}`, blob, {
+          xhrSend(`api/upload_chunk?uploadId=${uploadId}&index=${i}`, blob, {
             onUp: (loaded) => {
               const doneBytes = baseBytes + loaded;
               item.progress((doneBytes / file.size) * 100, doneBytes);
@@ -634,7 +696,7 @@
       }
 
       // 3) 通知服务端合并
-      await withRetry(() => xhrSend("/api/upload_finalize?uploadId=" + uploadId, null));
+      await withRetry(() => xhrSend("api/upload_finalize?uploadId=" + uploadId, null));
       item.done("完成");
       return { ok: true };
     } catch (e) {
@@ -703,9 +765,9 @@
   /* ---------------- 文件预览 ---------------- */
   // 高亮 / Markdown 库已本地化到 static/vendor/，不再依赖 CDN（大陆网络下 jsdelivr 经常加载失败导致代码不着色）
   const PV_LIB = {
-    marked: "/vendor/marked.min.js",
-    hljs: "/vendor/highlight.min.js",
-    hljsCss: "/vendor/github-dark.min.css",
+    marked: "vendor/marked.min.js",
+    hljs: "vendor/highlight.min.js",
+    hljsCss: "vendor/github-dark.min.css",
   };
   function loadScript(src) {
     return new Promise((res, rej) => {
@@ -727,13 +789,31 @@
   const PV_VIDEO = ["mp4", "webm", "mov", "m4v"];
   const PV_AUDIO = ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"];
   const PV_TEXT = ["txt", "md", "log", "csv", "json", "js", "ts", "jsx", "tsx", "py", "java", "go", "c", "h", "cpp", "cs", "sh", "bat", "html", "htm", "css", "xml", "yml", "yaml", "ini", "conf", "sql", "lua"];
+  // 代码类：不换行、带行号、横向滚动（保持代码结构不被硬折断）
+  const PV_CODE = ["json", "js", "ts", "jsx", "tsx", "py", "java", "go", "c", "h", "cpp", "cs", "sh", "bat", "html", "htm", "css", "xml", "yml", "yaml", "ini", "conf", "sql", "lua"];
 
   function closePreview() {
     $("#preview-modal").classList.add("hidden");
     $("#pv-body").innerHTML = ""; // 停止视频/音频播放
+    $("#pv-hbar").classList.add("hidden");
   }
   $("#pv-close").addEventListener("click", closePreview);
   $("#preview-modal").addEventListener("click", (e) => { if (e.target.id === "preview-modal") closePreview(); });
+
+  /* 常驻横向滚动条：内容过宽时固定显示在预览卡片底部（无需滚到最底部才能拖动） */
+  function setupPvHbar() {
+    const body = $("#pv-body"), bar = $("#pv-hbar"), space = $("#pv-hbar-space");
+    const wide = body.scrollWidth > body.clientWidth + 1;
+    bar.classList.toggle("hidden", !wide);
+    if (!wide) return;
+    space.style.width = body.scrollWidth + "px";
+    bar.scrollLeft = body.scrollLeft;
+  }
+  $("#pv-body").addEventListener("scroll", () => { $("#pv-hbar").scrollLeft = $("#pv-body").scrollLeft; });
+  $("#pv-hbar").addEventListener("scroll", () => { $("#pv-body").scrollLeft = $("#pv-hbar").scrollLeft; });
+  window.addEventListener("resize", () => {
+    if (!$("#preview-modal").classList.contains("hidden")) setupPvHbar();
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (!$("#force-modal").classList.contains("hidden")) return;   // 强制改密弹窗不可 Esc 关闭
@@ -743,7 +823,7 @@
 
   function previewFile(rel, name, size) {
     const ext = (String(name).split(".").pop() || "").toLowerCase();
-    const src = "/api/download?inline=1&path=" + encodeURIComponent(rel);
+    const src = "api/download?inline=1&path=" + encodeURIComponent(rel);
     const body = $("#pv-body");
     $("#pv-title").textContent = name;
     $("#pv-title").title = name;
@@ -789,6 +869,18 @@
         const div = body.querySelector(".md-body");
         div.innerHTML = marked.parse(text);
         div.querySelectorAll("pre code").forEach((el) => { try { hljs.highlightElement(el); } catch (_) {} });
+      } else if (PV_CODE.includes(ext)) {
+        // 代码：等宽字体 + 行号栏（sticky 左侧，横向滚动时行号保持可见）+ 不换行
+        await loadScript(PV_LIB.hljs);
+        const lines = text.split("\n").length;
+        body.innerHTML =
+          `<div class="pv-code">` +
+          `<div class="pv-gutter" aria-hidden="true">${Array.from({ length: lines }, (_, i) => i + 1).join("\n")}</div>` +
+          `<pre class="pv-doc code-body"><code class="hljs"></code></pre>` +
+          `</div>`;
+        const code = body.querySelector("code");
+        code.textContent = text;
+        try { hljs.highlightElement(code); } catch (_) {}
       } else {
         await loadScript(PV_LIB.hljs);
         body.innerHTML = `<pre class="pv-doc code-body"><code class="hljs"></code></pre>`;
@@ -796,8 +888,10 @@
         code.textContent = text;
         try { hljs.highlightElement(code); } catch (_) {}
       }
+      setupPvHbar();   // 内容过宽时显示常驻横向滚动条
     } catch (e) {
       body.innerHTML = `<div class="pv-center pv-unsupported">预览加载失败：${esc(e.message)}</div>`;
+      $("#pv-hbar").classList.add("hidden");
     }
   }
 
@@ -807,7 +901,7 @@
     try {
       const fh = await state.dlDir.getFileHandle(name, { create: true });
       const w = await fh.createWritable();
-      const resp = await fetch("/api/download?path=" + encodeURIComponent(rel));
+      const resp = await fetch("api/download?path=" + encodeURIComponent(rel));
       if (!resp.ok) throw new Error("download failed");
       await resp.body.pipeTo(w);
       return true;
@@ -819,7 +913,7 @@
 
   function triggerDownload(rel, name) {
     const a = document.createElement("a");
-    a.href = "/api/download?path=" + encodeURIComponent(rel);
+    a.href = "api/download?path=" + encodeURIComponent(rel);
     a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
   }
@@ -874,7 +968,7 @@
   $("#btn-mkdir").addEventListener("click", async () => {
     const name = prompt("新建文件夹名称：");
     if (!name) return;
-    const r = await fetch("/api/mkdir", { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetch("api/mkdir", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: state.currentPath, name }) });
     if (r.ok) { toast("已创建"); loadList(state.currentPath); }
     else { const j = await r.json().catch(() => ({})); toast(j.error || "创建失败"); }
@@ -885,7 +979,7 @@
     const list = [...state.selected];
     if (!list.length) return;
     if (!confirm(`确定删除选中的 ${list.length} 项？不可恢复。`)) return;
-    const r = await fetch("/api/delete", { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetch("api/delete", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths: list }) });
     if (r.ok) { toast("已删除"); loadList(state.currentPath); loadQuota(); }
     else toast("删除失败");
