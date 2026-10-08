@@ -334,6 +334,15 @@ server {
         client_max_body_size 0;
         proxy_request_buffering off;
     }
+
+    # 分享链接：/s/<token> 免登录下载（同样透传给后端）
+    location /s/ {
+        proxy_pass http://127.0.0.1:8000/s/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_request_buffering off;
+    }
 }
 EOF
   if nginx -t >/dev/null 2>&1; then

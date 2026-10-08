@@ -20,6 +20,7 @@
     - 文件操作：  /api/list, /api/upload, /api/download, /api/mkdir, /api/delete, /api/search
     - 容量配额：  /api/quota（GET 查询 / POST 扩容，上限为磁盘总容量的 90%）
     - 断点续传：  /api/upload_status, /api/upload_chunk, /api/upload_finalize, /api/upload_abort
+    - 文件分享：  /api/share（GET 列表 / POST 生成 / DELETE 取消），公开下载 /s/<token>
 
 安全提示：
     - 推荐用 scripts/install.sh 初始化：密码只保存 PBKDF2 哈希（CFM_PASSWORD_HASH + CFM_PASSWORD_SALT），
@@ -43,6 +44,7 @@ from urllib.parse import quote
 from flask import (
     Flask, request, session, jsonify, abort, send_file, send_from_directory, Response,
 )
+from markupsafe import escape
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -212,6 +214,26 @@ def clean_name(name):
     return os.path.basename(str(name).replace("\\", "/"))
 
 
+def unique_name(base_dir, name):
+    """目标位置已存在同名文件时自动改名，避免覆盖已有文件。
+
+    例：a.txt 已存在 → a (1).txt → a (2).txt …
+    """
+    name = clean_name(name)
+    if not (base_dir / name).exists():
+        return name
+    stem, dot, ext = name.rpartition(".")
+    if not dot:            # 没有扩展名的文件（如 README）
+        stem, ext = name, ""
+    suffix = "." + ext if ext else ""
+    for i in range(1, 10000):
+        cand = f"{stem} ({i}){suffix}"
+        if not (base_dir / cand).exists():
+            return cand
+    # 极端情况兜底：加时间戳
+    return f"{stem} ({int(time.time())}){suffix}"
+
+
 def session_key(rel, name, size, mtime):
     """由「路径 + 文件名 + 大小 + 修改时间」派生稳定会话 ID，保证同一份文件重复上传能续传。"""
     raw = f"{rel}|{name}|{size}|{mtime}".encode("utf-8")
@@ -240,6 +262,73 @@ def cleanup_stale_uploads():
 
 
 cleanup_stale_uploads()
+
+
+# ----------------------------- 文件分享 -----------------------------
+# 分享记录存在项目目录的 .shares.json（不放在共享目录里，避免污染文件列表）
+SHARE_FILE = os.path.join(BASE_DIR, ".shares.json")
+SHARES = {}
+
+
+def _load_shares():
+    global SHARES
+    SHARES = {}
+    if not os.path.isfile(SHARE_FILE):
+        return
+    try:
+        with open(SHARE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            SHARES = {k: v for k, v in data.items() if isinstance(v, dict)}
+    except Exception as e:
+        print(f"[警告] 读取分享记录失败：{e}")
+
+
+def _save_shares():
+    try:
+        tmp = SHARE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(SHARES, f, ensure_ascii=False)
+        os.replace(tmp, SHARE_FILE)
+    except Exception as e:
+        print(f"[警告] 写入分享记录失败：{e}")
+
+
+def _share_alive(rec):
+    """expires=0 表示永久有效。"""
+    exp = rec.get("expires") or 0
+    return exp == 0 or exp > time.time()
+
+
+def _purge_shares():
+    """清理已过期的分享链接。"""
+    dead = [t for t, r in SHARES.items() if not _share_alive(r)]
+    for t in dead:
+        SHARES.pop(t, None)
+    if dead:
+        _save_shares()
+
+
+def _share_error_page(title, detail, status):
+    """分享链接打不开时给一个说明页（比裸 404 友好）。"""
+    html = (
+        "<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>{escape(title)} · 私人云盘</title><style>"
+        "body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;"
+        "background:#f4f3ef;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;}"
+        ".c{background:#fff;border:1px solid #e6e4dc;border-radius:14px;padding:34px 30px;"
+        "max-width:380px;text-align:center;box-shadow:0 18px 40px rgba(25,24,34,.16);}"
+        ".i{font-size:44px}.t{font-size:18px;font-weight:700;margin:10px 0 6px;color:#191822;}"
+        ".d{font-size:13.5px;color:#8f8da0;line-height:1.6;}"
+        "</style></head><body><div class='c'><div class='i'>🔗</div>"
+        f"<div class='t'>{escape(title)}</div><div class='d'>{escape(detail)}</div></div></body></html>"
+    )
+    return Response(html, status, mimetype="text/html")
+
+
+_load_shares()
+_purge_shares()
 
 
 # ----------------------------- 容量配额 -----------------------------
@@ -468,6 +557,7 @@ def upload():
     base = safe_path(rel)
     base.mkdir(parents=True, exist_ok=True)
     saved = []
+    renamed = []
     for f in request.files.getlist("file"):
         if f and f.filename:
             name = clean_name(f.filename)
@@ -475,10 +565,13 @@ def upload():
                 continue
             if quota_exceeded(f.content_length or 0):
                 return quota_error_response()
-            f.save(str(base / name))
-            saved.append(name)
+            final = unique_name(base, name)     # 重名自动改名，不覆盖已有文件
+            f.save(str(base / final))
+            saved.append(final)
+            if final != name:
+                renamed.append({"from": name, "to": final})
     invalidate_used()
-    return jsonify(ok=True, saved=saved)
+    return jsonify(ok=True, saved=saved, renamed=renamed)
 
 
 # ----------------------------- 断点续传上传 -----------------------------
@@ -507,16 +600,30 @@ def upload_status():
     uid = session_key(rel, name, size, mtime)
     d = UPLOAD_DIR / uid
     d.mkdir(parents=True, exist_ok=True)
+
+    # 同名文件已存在但内容不同 → 自动改名（a.txt → a (1).txt），不覆盖原文件
+    final_name = name
+    if dest.exists():
+        final_name = unique_name(base, name)
+    meta_f = d / "meta.json"
+    if meta_f.is_file():
+        try:
+            old = json.loads(meta_f.read_text(encoding="utf-8"))
+            if old.get("finalName"):
+                final_name = old["finalName"]   # 续传时沿用上次解析出的名字，保持稳定
+        except Exception:
+            pass
     meta = {
-        "path": rel, "name": name, "size": size, "mtime": mtime,
+        "path": rel, "name": name, "finalName": final_name, "size": size, "mtime": mtime,
         "chunkSize": CHUNK_SIZE, "updated": time.time(),
     }
-    (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    meta_f.write_text(json.dumps(meta), encoding="utf-8")
 
     received = sorted(
         int(p.name[5:]) for p in d.glob("part_*") if p.name[5:].isdigit()
     )
-    return jsonify(ok=True, uploadId=uid, chunkSize=CHUNK_SIZE, received=received)
+    return jsonify(ok=True, uploadId=uid, chunkSize=CHUNK_SIZE, received=received,
+                   name=name, finalName=final_name)
 
 
 @app.route("/api/upload_chunk", methods=["POST"])
@@ -562,7 +669,12 @@ def upload_finalize():
 
     base = safe_path(meta["path"])
     base.mkdir(parents=True, exist_ok=True)
-    dest = base / clean_name(meta["name"])
+    target_name = clean_name(meta.get("finalName") or meta["name"])
+    dest = base / target_name
+    if dest.exists():
+        # 兜底：合并前仍存在同名（并发上传等），再让一次名
+        target_name = unique_name(base, target_name)
+        dest = base / target_name
 
     # 按序追加写入，避免一次性把整文件读进内存
     with open(str(dest), "wb") as out:
@@ -570,7 +682,8 @@ def upload_finalize():
             out.write((d / ("part_" + str(i))).read_bytes())
     shutil.rmtree(str(d), ignore_errors=True)
     invalidate_used()
-    return jsonify(ok=True, name=meta["name"])
+    return jsonify(ok=True, name=target_name,
+                   renamed=(target_name != clean_name(meta["name"])))
 
 
 @app.route("/api/upload_abort", methods=["POST"])
@@ -637,6 +750,96 @@ def download():
         as_attachment=not inline,
         download_name=f.name,
         mimetype=mime,
+    )
+    resp.headers["Accept-Ranges"] = "bytes"
+    return resp
+
+
+# ----------------------------- 分享链接 -----------------------------
+@app.route("/api/share", methods=["GET"])
+@login_required
+def share_list():
+    _purge_shares()
+    items = []
+    for t, r in sorted(SHARES.items(), key=lambda kv: kv[1].get("created", 0), reverse=True):
+        exp = r.get("expires") or 0
+        items.append({
+            "token": t,
+            "path": r.get("path", ""),
+            "name": r.get("name", ""),
+            "size": r.get("size", 0),
+            "created": int(r.get("created", 0) * 1000),
+            "expires": int(exp * 1000) if exp else 0,
+            "downloads": int(r.get("downloads", 0)),
+        })
+    return jsonify(ok=True, items=items)
+
+
+@app.route("/api/share", methods=["POST"])
+@login_required
+def share_create():
+    """生成一个免登录下载链接。body: {path, expire(小时，0=永久)}"""
+    data = request.get_json(silent=True) or {}
+    rel = data.get("path", "")
+    f = safe_path(rel)
+    if not f.is_file():
+        return jsonify(ok=False, error="只能分享文件（文件夹暂不支持）"), 400
+    try:
+        hours = float(data.get("expire", 24 * 7))
+    except (TypeError, ValueError):
+        hours = 24 * 7
+    hours = max(0, min(hours, 24 * 365))   # 最多一年
+    _purge_shares()
+    token = secrets.token_urlsafe(10)
+    exp = (time.time() + hours * 3600) if hours > 0 else 0
+    SHARES[token] = {
+        "path": rel,
+        "name": f.name,
+        "size": f.stat().st_size,
+        "created": time.time(),
+        "expires": exp,
+        "downloads": 0,
+    }
+    _save_shares()
+    return jsonify(ok=True, token=token, name=f.name,
+                   expires=int(exp * 1000) if exp else 0)
+
+
+@app.route("/api/share", methods=["DELETE"])
+@login_required
+def share_remove():
+    data = request.get_json(silent=True) or {}
+    token = str(data.get("token", ""))
+    if token in SHARES:
+        SHARES.pop(token, None)
+        _save_shares()
+    return jsonify(ok=True)
+
+
+@app.route("/s/<token>")
+def share_download(token):
+    """公开分享下载：任何拿到链接的人都能直接下载，无需登录。"""
+    rec = SHARES.get(token)
+    if not rec:
+        return _share_error_page("链接无效", "该分享链接不存在或已被取消。", 404)
+    if not _share_alive(rec):
+        SHARES.pop(token, None)
+        _save_shares()
+        return _share_error_page("链接已过期", "该分享链接已过期，请联系分享者重新生成。", 410)
+    try:
+        f = safe_path(rec.get("path", ""))
+    except Exception:
+        return _share_error_page("链接无效", "分享的文件路径不合法。", 404)
+    if not f.is_file():
+        return _share_error_page(
+            "文件不存在", f"分享的文件「{rec.get('name', '')}」已被移动或删除。", 404)
+    rec["downloads"] = int(rec.get("downloads", 0)) + 1
+    _save_shares()
+    resp = send_file(str(f), as_attachment=True, download_name=f.name)
+    # 中文文件名兼容：ASCII 回退名 + RFC5987 编码名
+    fallback = "".join(c if ord(c) < 128 else "_" for c in f.name)
+    resp.headers["Content-Disposition"] = (
+        f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(f.name)}'
     )
     resp.headers["Accept-Ranges"] = "bytes"
     return resp

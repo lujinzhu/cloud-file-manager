@@ -95,6 +95,7 @@
             <span id="pv-size" class="pv-size"></span>
           </div>
           <div class="pv-actions">
+            <button id="pv-share" class="btn ghost small" title="生成免登录下载链接">🔗 分享</button>
             <button id="pv-download" class="btn ghost small" title="下载该文件">⬇️ 下载</button>
             <button id="pv-close" class="pv-x" title="关闭 (Esc)">✕</button>
           </div>
@@ -140,6 +141,40 @@
           <input id="st-newpw2" type="password" placeholder="确认新密码" autocomplete="new-password" />
           <button id="st-pw-btn" class="btn primary st-full">确认修改</button>
           <div id="st-msg" class="st-msg"></div>
+        </section>
+
+        <!-- 分享链接管理 -->
+        <section class="st-section">
+          <h3 class="st-h">🔗 分享链接管理</h3>
+          <div id="sh-list" class="sh-list"><div class="st-hint">加载中…</div></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 分享链接弹窗 -->
+    <div id="share-modal" class="modal-mask hidden">
+      <div class="modal-card" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span class="modal-title">🔗 分享链接</span>
+          <button id="sh-close" class="pv-x" title="关闭 (Esc)">✕</button>
+        </div>
+        <section class="st-section">
+          <div id="sh-name" class="sh-name">—</div>
+          <div class="st-row">
+            <input id="sh-url" readonly spellcheck="false" placeholder="生成中…" />
+            <button id="sh-copy" class="btn primary">复制</button>
+          </div>
+          <div class="st-row">
+            <select id="sh-expire" class="sort-select sh-expire" title="链接有效期">
+              <option value="24">1 天后过期</option>
+              <option value="168" selected>7 天后过期</option>
+              <option value="720">30 天后过期</option>
+              <option value="0">永久有效</option>
+            </select>
+            <button id="sh-revoke" class="btn danger">停止分享</button>
+          </div>
+          <div id="sh-msg" class="st-msg"></div>
+          <div class="st-hint">任何拿到此链接的人都可以<b>免登录直接下载</b>。更改上方有效期会自动重新生成链接；点「停止分享」可立即作废。</div>
         </section>
       </div>
     </div>

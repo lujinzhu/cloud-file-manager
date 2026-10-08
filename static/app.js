@@ -245,12 +245,141 @@
     el.title = `已用 ${fmtSize(q.used)}，总容量 ${fmtSize(q.quota)}（磁盘总容量 ${fmtSize(q.diskTotal)}）`;
   }
 
+  /* ---------------- 文件分享（免登录下载链接） ---------------- */
+  // 部署在子路径（如 /yunpan/）时，分享链接也要带同样的前缀
+  function appBase() {
+    return location.pathname.replace(/[^/]*$/, "");
+  }
+  function shareUrl(token) {
+    return location.origin + appBase() + "s/" + token;
+  }
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) {}
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (_) { return false; }
+  }
+
+  let shareState = { rel: "", name: "", token: "" };
+
+  function openShareModal(rel, name) {
+    shareState = { rel, name, token: "" };
+    $("#sh-name").textContent = "🔗 " + name;
+    $("#sh-url").value = "";
+    $("#sh-msg").textContent = ""; $("#sh-msg").className = "st-msg";
+    $("#share-modal").classList.remove("hidden");
+    createShare();
+  }
+  function closeShareModal() { $("#share-modal").classList.add("hidden"); }
+
+  async function createShare() {
+    const hours = parseFloat($("#sh-expire").value);
+    const msg = $("#sh-msg");
+    msg.textContent = "生成中…"; msg.className = "st-msg";
+    // 同一文件重复分享时先作废旧链接，避免堆积
+    if (shareState.token) {
+      await fetch("api/share", { method: "DELETE", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: shareState.token }) }).catch(() => {});
+      shareState.token = "";
+    }
+    try {
+      const r = await fetch("api/share", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: shareState.rel, expire: hours }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { msg.textContent = j.error || "生成失败"; msg.className = "st-msg err"; return; }
+      shareState.token = j.token;
+      shareState.name = j.name || shareState.name;
+      $("#sh-url").value = shareUrl(j.token);
+      msg.textContent = j.expires
+        ? `已生成，有效期至 ${fmtTime(j.expires)}`
+        : "已生成，永久有效";
+      msg.className = "st-msg ok";
+    } catch (e) {
+      msg.textContent = "网络错误：" + e.message; msg.className = "st-msg err";
+    }
+  }
+
+  $("#sh-close").addEventListener("click", closeShareModal);
+  $("#share-modal").addEventListener("click", (e) => { if (e.target.id === "share-modal") closeShareModal(); });
+  $("#sh-expire").addEventListener("change", () => { if (shareState.rel) createShare(); });
+  $("#sh-copy").addEventListener("click", async () => {
+    const url = $("#sh-url").value;
+    if (!url) { toast("链接还没生成好"); return; }
+    const ok = await copyText(url);
+    toast(ok ? "链接已复制，发给对方即可直接下载" : "复制失败，请手动选中复制");
+    if (ok) { const b = $("#sh-copy"); b.textContent = "已复制"; setTimeout(() => (b.textContent = "复制"), 1800); }
+  });
+  $("#sh-revoke").addEventListener("click", async () => {
+    if (!shareState.token) { toast("当前没有可停止的分享"); return; }
+    await fetch("api/share", { method: "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: shareState.token }) }).catch(() => {});
+    shareState.token = "";
+    $("#sh-url").value = "";
+    $("#sh-msg").textContent = "已停止分享，旧链接立即失效"; $("#sh-msg").className = "st-msg";
+    toast("已停止分享");
+  });
+
+  // 设置 → 分享链接管理
+  async function renderShareList() {
+    const box = $("#sh-list");
+    let j;
+    try {
+      const r = await fetch("api/share");
+      j = await r.json();
+    } catch (_) { box.innerHTML = '<div class="st-hint">加载失败</div>'; return; }
+    const items = (j && j.items) || [];
+    if (!items.length) { box.innerHTML = '<div class="st-hint">还没有分享链接。在文件上点 🔗 即可生成。</div>'; return; }
+    box.innerHTML = "";
+    items.forEach((it) => {
+      const row = document.createElement("div");
+      row.className = "sh-item";
+      const exp = it.expires ? fmtTime(it.expires) + " 过期" : "永久有效";
+      row.innerHTML = `
+        <div class="sh-meta">
+          <div class="sh-item-name" title="${esc(it.name)}">🔗 ${esc(it.name)}</div>
+          <div class="sh-item-sub">${fmtSize(it.size)} · ${exp} · 已下载 ${it.downloads} 次</div>
+        </div>`;
+      const acts = document.createElement("div");
+      acts.className = "sh-acts";
+      const cp = document.createElement("button");
+      cp.className = "icon-btn"; cp.textContent = "📋"; cp.title = "复制链接";
+      cp.onclick = async () => {
+        const ok = await copyText(shareUrl(it.token));
+        toast(ok ? "链接已复制" : "复制失败，请手动复制");
+      };
+      const rm = document.createElement("button");
+      rm.className = "icon-btn danger"; rm.textContent = "🗑"; rm.title = "取消分享";
+      rm.onclick = async () => {
+        await fetch("api/share", { method: "DELETE", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: it.token }) });
+        toast("已取消分享"); renderShareList();
+      };
+      acts.appendChild(cp); acts.appendChild(rm);
+      row.appendChild(acts);
+      box.appendChild(row);
+    });
+  }
+
   /* ---------------- 设置二级菜单 ---------------- */
   function openSettings() {
     $("#st-msg").textContent = ""; $("#st-msg").className = "st-msg";
     $("#st-oldpw").value = $("#st-newpw").value = $("#st-newpw2").value = "";
     $("#st-quota-input").value = "";
     renderSettingsQuota(state.quota);
+    renderShareList();
     $("#settings-modal").classList.remove("hidden");
   }
   function closeSettings() { $("#settings-modal").classList.add("hidden"); }
@@ -551,6 +680,13 @@
 
       const acts = document.createElement("div");
       acts.className = "acts";
+      if (it.type === "file") {
+        const sh = document.createElement("button");
+        sh.className = "icon-btn"; sh.textContent = "🔗"; sh.title = "生成分享链接（免登录下载）";
+        sh.onclick = () => openShareModal(rel, it.name);
+        acts.appendChild(sh);
+      }
+
       const dl = document.createElement("button");
       dl.className = "icon-btn"; dl.textContent = "⬇️"; dl.title = "下载";
       dl.onclick = () => downloadFile(rel, it.name);
@@ -643,8 +779,9 @@
     if (file.size === 0) {
       try {
         const fd = new FormData(); fd.append("file", file, file.name);
-        await withRetry(() => xhrSend("api/upload?path=" + encodeURIComponent(state.currentPath), fd));
-        item.done("完成");
+        const r = await withRetry(() => xhrSend("api/upload?path=" + encodeURIComponent(state.currentPath), fd));
+        const rn = (r && r.renamed && r.renamed[0]) || null;
+        item.done(rn ? `完成 · 已重命名为「${rn.to}」` : "完成");
         return { ok: true };
       } catch (e) { item.fail("失败：" + e.message); return { ok: false }; }
     }
@@ -660,6 +797,12 @@
       // 1) 询问服务端：能否秒传 / 已收到哪些分片
       const st = await withRetry(() => postJSON("api/upload_status", payload));
       if (st.done) { item.done("文件已存在，已跳过"); return { skipped: true }; }
+
+      // 云盘里已有同名文件 → 服务端会自动改名保存，这里提前告知最终文件名
+      const finalName = st.finalName || file.name;
+      if (finalName !== file.name) {
+        item.status(`已存在同名文件，将保存为「${finalName}」`, "resume");
+      }
 
       const uploadId = st.uploadId;
       const chunkSize = st.chunkSize;
@@ -696,9 +839,10 @@
       }
 
       // 3) 通知服务端合并
-      await withRetry(() => xhrSend("api/upload_finalize?uploadId=" + uploadId, null));
-      item.done("完成");
-      return { ok: true };
+      const fin = await withRetry(() => xhrSend("api/upload_finalize?uploadId=" + uploadId, null));
+      const savedName = (fin && fin.name) || finalName;
+      item.done(savedName !== file.name ? `完成 · 已重命名为「${savedName}」` : "完成");
+      return { ok: true, savedName };
     } catch (e) {
       // 失败不清理服务端已收分片，下次重选同一文件自动从断点继续
       if (e.code === "quota") {
@@ -714,11 +858,13 @@
   async function uploadFiles(files) {
     if (!files || !files.length) return;
     ensurePanel();
-    let ok = 0, skip = 0, fail = 0;
+    let ok = 0, skip = 0, fail = 0, renamed = 0;
     for (const f of files) {
       const r = await uploadOne(f);
       if (r.quota) break;               // 容量不足：停止后续上传，弹出设置
-      if (r.skipped) skip++; else if (r.ok) ok++; else fail++;
+      if (r.skipped) skip++;
+      else if (r.ok) { ok++; if (r.savedName && r.savedName !== f.name) renamed++; }
+      else fail++;
     }
     loadList(state.currentPath);
     loadQuota();   // 上传后刷新容量显示
@@ -731,6 +877,7 @@
     }
     let msg = `上传完成：成功 ${ok}`;
     if (skip) msg += `，跳过 ${skip}`;
+    if (renamed) msg += `，${renamed} 个重名已自动改名`;
     if (fail) msg += `，失败 ${fail}`;
     toast(msg);
 
@@ -818,6 +965,7 @@
     if (e.key !== "Escape") return;
     if (!$("#force-modal").classList.contains("hidden")) return;   // 强制改密弹窗不可 Esc 关闭
     if (!$("#preview-modal").classList.contains("hidden")) closePreview();
+    if (!$("#share-modal").classList.contains("hidden")) closeShareModal();
     if (!$("#settings-modal").classList.contains("hidden")) closeSettings();
   });
 
@@ -830,6 +978,7 @@
     $("#pv-ico").textContent = kindOf(name, "file").icon;
     $("#pv-size").textContent = size !== undefined ? fmtSize(size) : "";
     $("#pv-download").onclick = () => downloadFile(rel, name);
+    $("#pv-share").onclick = () => openShareModal(rel, name);
     body.innerHTML = "";
     $("#preview-modal").classList.remove("hidden");
 
