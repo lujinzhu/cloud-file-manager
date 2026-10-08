@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-云文件管理器 - 服务器端
+私人云盘 (cloud-file-manager) - 服务器端
 ==================================================
 运行前：
-    1) pip install -r requirements.txt
+    1) pip3 install -r requirements.txt
     2) 设置环境变量（或改下面的默认值）：
-         CFM_ROOT     要管理/共享的文件夹（必改！指向你云服务器上的目标目录）
-         CFM_PASSWORD 登录密码
-         CFM_HOST     监听地址，默认 0.0.0.0（公网可访问）
-         CFM_PORT     监听端口，默认 8000
-         CFM_SECRET   Flask 会话密钥（生产环境务必设置）
-    3) python server.py
+         CFM_ROOT       要管理/共享的文件夹（必改！指向你云服务器上的目标目录）
+         CFM_PASSWORD   登录密码（必改！）
+         CFM_HOST       监听地址，默认 0.0.0.0（公网可访问）
+         CFM_PORT       监听端口，默认 8000
+         CFM_SECRET     Flask 会话密钥（生产环境务必设置，否则重启需重新登录）
+         CFM_CHUNK_SIZE 续传分片大小（字节），默认 1MB
+         CFM_UPLOAD_TTL 未完成的上传会话保留时长（秒），默认 24 小时
+    3) python3 server.py
+
+接口一览：
+    - 鉴权：      /api/login, /api/logout, /api/me
+    - 文件操作：  /api/list, /api/upload, /api/download, /api/mkdir, /api/delete
+    - 断点续传：  /api/upload_status, /api/upload_chunk, /api/upload_finalize, /api/upload_abort
 
 安全提示：
     - 请务必修改默认密码，并尽量用防火墙/安全组只放行需要的端口。
@@ -19,13 +26,18 @@
 ==================================================
 """
 import os
+import re
+import json
+import time
 import shutil
+import hashlib
 import secrets
 from functools import wraps
 from pathlib import Path
+from urllib.parse import quote
 
 from flask import (
-    Flask, request, session, jsonify, abort, send_file, send_from_directory,
+    Flask, request, session, jsonify, abort, send_file, send_from_directory, Response,
 )
 
 # ----------------------------- 配置 -----------------------------
@@ -34,6 +46,8 @@ PASSWORD = os.environ.get("CFM_PASSWORD", "123456")
 HOST = os.environ.get("CFM_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CFM_PORT", "8000"))
 SECRET_KEY = os.environ.get("CFM_SECRET", secrets.token_hex(16))
+CHUNK_SIZE = int(os.environ.get("CFM_CHUNK_SIZE", 1024 * 1024))    # 续传分片大小，默认 1MB
+UPLOAD_TTL = int(os.environ.get("CFM_UPLOAD_TTL", 24 * 3600))      # 上传会话保留时长
 # -----------------------------------------------------------------
 
 app = Flask(__name__, static_folder="static", static_url_path="")
@@ -42,7 +56,10 @@ app.secret_key = SECRET_KEY
 ROOT = Path(ROOT_DIR).resolve()
 ROOT.mkdir(parents=True, exist_ok=True)
 
+UPLOAD_DIR = ROOT / ".cfmuploads"   # 隐藏目录：存放续传中的分片
 
+
+# ----------------------------- 工具 -----------------------------
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -58,6 +75,10 @@ def safe_path(rel):
     target = (ROOT / rel).resolve()
     if target != ROOT and ROOT not in target.parents:
         abort(400, "非法路径")
+    # 禁止访问续传分片的隐藏临时目录
+    parts = target.relative_to(ROOT).parts if target != ROOT else ()
+    if ".cfmuploads" in parts:
+        abort(400, "非法路径")
     return target
 
 
@@ -66,6 +87,37 @@ def clean_name(name):
     return os.path.basename(str(name).replace("\\", "/"))
 
 
+def session_key(rel, name, size, mtime):
+    """由「路径 + 文件名 + 大小 + 修改时间」派生稳定会话 ID，保证同一份文件重复上传能续传。"""
+    raw = f"{rel}|{name}|{size}|{mtime}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def valid_uid(uid):
+    return bool(re.fullmatch(r"[0-9a-f]{64}", uid or ""))
+
+
+def cleanup_stale_uploads():
+    """清理超过 TTL 仍未完成的上传会话，避免磁盘被残留分片占满。"""
+    if not UPLOAD_DIR.is_dir():
+        return
+    now = time.time()
+    removed = 0
+    for d in UPLOAD_DIR.iterdir():
+        try:
+            if d.is_dir() and (now - d.stat().st_mtime) > UPLOAD_TTL:
+                shutil.rmtree(str(d), ignore_errors=True)
+                removed += 1
+        except Exception:
+            pass
+    if removed:
+        print(f"[启动清理] 已清除 {removed} 个过期上传会话")
+
+
+cleanup_stale_uploads()
+
+
+# ----------------------------- 鉴权 -----------------------------
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or {}
@@ -91,6 +143,7 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+# ----------------------------- 文件浏览 -----------------------------
 @app.route("/api/list")
 @login_required
 def list_dir():
@@ -100,7 +153,7 @@ def list_dir():
         abort(404, "路径不存在")
     entries = []
     for p in sorted(base.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
-        if p.name.startswith("."):  # 隐藏文件/目录不展示
+        if p.name.startswith("."):  # 隐藏文件/目录（含 .cfmuploads）不展示
             continue
         st = p.stat()
         entries.append({
@@ -109,7 +162,6 @@ def list_dir():
             "size": st.st_size if p.is_file() else 0,
             "mtime": int(st.st_mtime * 1000),
         })
-    # 计算当前层级的相对路径（用于面包屑）
     try:
         cur = str(base.relative_to(ROOT)).replace("\\", "/")
     except ValueError:
@@ -119,6 +171,7 @@ def list_dir():
     return jsonify(path=cur, root=ROOT.name, entries=entries)
 
 
+# ----------------------------- 普通上传（小文件） -----------------------------
 @app.route("/api/upload", methods=["POST"])
 @login_required
 def upload():
@@ -131,27 +184,159 @@ def upload():
             name = clean_name(f.filename)
             if not name:
                 continue
-            dest = base / name
-            f.save(str(dest))
+            f.save(str(base / name))
             saved.append(name)
     return jsonify(ok=True, saved=saved)
 
 
-@app.route("/api/download")
+# ----------------------------- 断点续传上传 -----------------------------
+# 流程：upload_status（拿 uploadId + 已收分片） → 只补传缺失分片 → upload_finalize 合并
+@app.route("/api/upload_status", methods=["POST"])
+@login_required
+def upload_status():
+    data = request.get_json(silent=True) or {}
+    rel = data.get("path", "")
+    name = clean_name(data.get("name", ""))
+    if not name:
+        abort(400, "非法文件名")
+    size = int(data.get("size", 0) or 0)
+    mtime = int(data.get("mtime", 0) or 0)
+    base = safe_path(rel)
+
+    # 已完成判定：目标位置已存在同名且大小一致的文件 → 直接跳过整段上传
+    dest = base / name
+    if dest.is_file() and size > 0 and dest.stat().st_size == size:
+        return jsonify(ok=True, done=True, name=name)
+
+    uid = session_key(rel, name, size, mtime)
+    d = UPLOAD_DIR / uid
+    d.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "path": rel, "name": name, "size": size, "mtime": mtime,
+        "chunkSize": CHUNK_SIZE, "updated": time.time(),
+    }
+    (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    received = sorted(
+        int(p.name[5:]) for p in d.glob("part_*") if p.name[5:].isdigit()
+    )
+    return jsonify(ok=True, uploadId=uid, chunkSize=CHUNK_SIZE, received=received)
+
+
+@app.route("/api/upload_chunk", methods=["POST"])
+@login_required
+def upload_chunk():
+    uid = request.args.get("uploadId", "")
+    idx = request.args.get("index", "")
+    if not valid_uid(uid) or not idx.isdigit():
+        abort(400, "参数错误")
+    d = UPLOAD_DIR / uid
+    if not (d / "meta.json").is_file():
+        abort(404, "上传会话不存在")
+    blob = request.get_data()
+    if not blob:
+        abort(400, "空分片")
+    (d / ("part_" + idx)).write_bytes(blob)
+    try:
+        os.utime(str(d), None)  # 刷新会话活跃时间，避免被 TTL 清理
+    except Exception:
+        pass
+    return jsonify(ok=True, index=int(idx), len=len(blob))
+
+
+@app.route("/api/upload_finalize", methods=["POST"])
+@login_required
+def upload_finalize():
+    uid = request.args.get("uploadId", "")
+    if not valid_uid(uid):
+        abort(400, "参数错误")
+    d = UPLOAD_DIR / uid
+    meta_f = d / "meta.json"
+    if not meta_f.is_file():
+        abort(404, "上传会话不存在")
+
+    meta = json.loads(meta_f.read_text(encoding="utf-8"))
+    size = int(meta["size"])
+    chunk = int(meta["chunkSize"])
+    total = max(1, (size + chunk - 1) // chunk)
+
+    missing = [i for i in range(total) if not (d / ("part_" + str(i))).is_file()]
+    if missing:
+        return jsonify(ok=False, error="分片缺失", missing=missing), 400
+
+    base = safe_path(meta["path"])
+    base.mkdir(parents=True, exist_ok=True)
+    dest = base / clean_name(meta["name"])
+
+    # 按序追加写入，避免一次性把整文件读进内存
+    with open(str(dest), "wb") as out:
+        for i in range(total):
+            out.write((d / ("part_" + str(i))).read_bytes())
+    shutil.rmtree(str(d), ignore_errors=True)
+    return jsonify(ok=True, name=meta["name"])
+
+
+@app.route("/api/upload_abort", methods=["POST"])
+@login_required
+def upload_abort():
+    uid = request.args.get("uploadId", "")
+    if valid_uid(uid):
+        shutil.rmtree(str(UPLOAD_DIR / uid), ignore_errors=True)
+    return jsonify(ok=True)
+
+
+# ----------------------------- 下载 -----------------------------
+# 支持 HTTP Range：让浏览器/下载工具在中断后能从断点继续，不必重头再来。
+# 注意：客户端仍是「单连接」下载，不会像并行分片那样在低带宽服务器上反而变慢。
+@app.route("/api/download", methods=["GET", "HEAD"])
 @login_required
 def download():
     rel = request.args.get("path", "")
     f = safe_path(rel)
     if not f.is_file():
         abort(404, "文件不存在")
-    return send_file(
+    size = f.stat().st_size
+    disp = "attachment; filename*=UTF-8''" + quote(f.name)
+
+    if request.method == "HEAD":
+        resp = Response("", 200, headers={
+            "Accept-Ranges": "bytes",
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": disp,
+        })
+        resp.headers["Content-Length"] = str(size)
+        return resp
+
+    range_header = request.headers.get("Range")
+    m = re.match(r"bytes=(\d*)-(\d*)$", (range_header or "").strip())
+    if m:
+        start_s, end_s = m.group(1), m.group(2)
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s != "" else size - 1
+        if start < 0 or start >= size or end >= size or start > end:
+            abort(416, "范围不合法")
+        length = end - start + 1
+        with open(str(f), "rb") as fh:
+            fh.seek(start)
+            chunk_data = fh.read(length)
+        return Response(chunk_data, 206, mimetype="application/octet-stream", headers={
+            "Content-Range": f"bytes {start}-{end}/{size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+            "Content-Disposition": disp,
+        })
+
+    resp = send_file(
         str(f),
         as_attachment=True,
         download_name=f.name,
         mimetype="application/octet-stream",
     )
+    resp.headers["Accept-Ranges"] = "bytes"
+    return resp
 
 
+# ----------------------------- 其它操作 -----------------------------
 @app.route("/api/mkdir", methods=["POST"])
 @login_required
 def mkdir():
@@ -180,7 +365,8 @@ def delete():
 
 
 if __name__ == "__main__":
-    print(f"云文件管理器已启动： http://{HOST}:{PORT}")
+    print(f"私人云盘已启动： http://{HOST}:{PORT}")
     print(f"管理目录： {ROOT}")
+    print(f"续传分片： {CHUNK_SIZE // 1024} KB")
     print("请在浏览器打开上面的地址，使用密码登录。")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
