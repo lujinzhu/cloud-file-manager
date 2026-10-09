@@ -11,7 +11,7 @@
 #   1. 检测 python3（缺失时询问是否安装，拒绝则退出）
 #   2. 检测 pip3 / Flask（安装前询问）
 #   3. 下载源码到【当前目录】（项目所有文件都放在这里，便于统一管理与一键卸载）
-#   4. 生成 .env（密码仅保存 PBKDF2 哈希；云盘容量默认取磁盘总容量的 80% 并取整）
+#   4. 生成 .env（密码仅保存 PBKDF2 哈希；可设置云盘容量占本地磁盘的百分比，默认 80%）
 #   5. 可选安装 systemd 常驻服务（改动系统，先询问）
 # ============================================================
 set -u
@@ -75,14 +75,25 @@ print(salt, hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt
 PYEOF
 }
 
-default_quota() { # 当前目录所在磁盘总容量的 80%，向下取整（>=1GB 按整 GB，否则按整 100MB）
-  python3 - "$PROJECT_DIR" <<'PYEOF'
+quota_by_pct() { # $1=占磁盘总容量的百分比(1-90)，向下取整（>=1TB 按整 TB，>=1GB 按整 GB，否则按整 100MB）
+  python3 - "$PROJECT_DIR" "$1" <<'PYEOF'
 import sys, shutil
 t = shutil.disk_usage(sys.argv[1]).total
-q = int(t * 0.8)
-GB, MB = 1024 ** 3, 1024 ** 2
-print(int(q // GB) * GB if q >= GB else int(q // (100 * MB)) * 100 * MB)
+pct = min(90, max(1, int(sys.argv[2] or 80)))
+q = int(t * pct / 100)
+TB, GB, MB = 1024 ** 4, 1024 ** 3, 1024 ** 2
+if q >= TB:   print(int(q // TB) * TB)
+elif q >= GB: print(int(q // GB) * GB)
+else:         print(int(q // (100 * MB)) * 100 * MB)
 PYEOF
+}
+
+human_bytes() { # $1=字节数 → 人类可读
+  python3 -c "
+n = int('$1')
+tb, gb = 1024**4, 1024**3
+print(f'{n/tb:.1f} TB' if n >= tb else f'{n/gb:.1f} GB' if n >= gb else f'{n} 字节')
+" 2>/dev/null || echo "$1 字节"
 }
 
 upsert_env() { # $1=KEY $2=VALUE  （在 $ENV_FILE 中更新或追加）
@@ -240,9 +251,19 @@ if [ "${KEEP_ENV:-0}" != "1" ]; then
   # 4.4 会话密钥
   CFM_SECRET_VAL=$(python3 -c "import secrets;print(secrets.token_hex(32))")
 
-  # 4.5 云盘总容量：默认取当前磁盘总容量的 80%（自动取整）
-  QUOTA_VAL=$(default_quota)
-  info "云盘总容量默认设为磁盘的 80%：$(python3 -c "print(f'{$QUOTA_VAL/1024**3:.1f} GB')" 2>/dev/null || echo "$QUOTA_VAL 字节")（可在网页「设置」中调整，上限为磁盘的 90%）"
+  # 4.5 云盘总容量：询问占本地磁盘总容量的百分比，回车默认 80%
+  DISK_TOTAL=$(python3 -c "import shutil;print(shutil.disk_usage('$PROJECT_DIR').total)" 2>/dev/null || echo 0)
+  info "本地磁盘总容量：$(human_bytes "$DISK_TOTAL")"
+  QUOTA_PCT=$(ask "云盘容量占本地磁盘的百分比（1-90，回车=默认 80）: " "80")
+  case "$QUOTA_PCT" in
+    ''|*[!0-9]*) QUOTA_PCT=80 ;;
+  esac
+  if [ "$QUOTA_PCT" -lt 1 ] || [ "$QUOTA_PCT" -gt 90 ] 2>/dev/null; then
+    warn "百分比需在 1-90 之间，已回退为默认 80%"
+    QUOTA_PCT=80
+  fi
+  QUOTA_VAL=$(quota_by_pct "$QUOTA_PCT")
+  ok "云盘总容量设为磁盘的 ${QUOTA_PCT}%：$(human_bytes "$QUOTA_VAL")"
 
   # 写 .env
   cat > "$ENV_FILE" <<EOF
@@ -275,12 +296,12 @@ EOF
   printf "  ${C_B}CFM_SECRET${C_0}          = %s…（随机生成）\n" "$(echo "$CFM_SECRET_VAL" | head -c 24)"
   printf "  ${C_B}CFM_CHUNK_SIZE${C_0}      = 1048576 (1MB)\n"
   printf "  ${C_B}CFM_UPLOAD_TTL${C_0}      = 86400 (24小时)\n"
-  printf "  ${C_B}CFM_QUOTA${C_0}           = %s（云盘总容量，字节）\n" "$QUOTA_VAL"
+  printf "  ${C_B}CFM_QUOTA${C_0}           = %s（云盘总容量 = 磁盘的 %s%%，字节）\n" "$QUOTA_VAL" "$QUOTA_PCT"
 fi
 
 # 老部署升级：补写 CFM_QUOTA（保留现有配置时）
 if [ -f "$ENV_FILE" ] && ! grep -q '^CFM_QUOTA=' "$ENV_FILE" 2>/dev/null; then
-  upsert_env "CFM_QUOTA" "$(default_quota)"
+  upsert_env "CFM_QUOTA" "$(quota_by_pct 80)"
   info "已为现有配置补充默认云盘容量（CFM_QUOTA，磁盘的 80%）"
 fi
 

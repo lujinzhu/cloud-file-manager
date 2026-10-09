@@ -16,9 +16,9 @@
     3) python3 server.py
 
 接口一览：
-    - 鉴权：      /api/login, /api/logout, /api/me, /api/password（网页端改密码）
+    - 鉴权：      /api/login, /api/logout, /api/me, /api/password（网页端改密码，无需旧密码）
     - 文件操作：  /api/list, /api/upload, /api/download, /api/mkdir, /api/delete, /api/search
-    - 容量配额：  /api/quota（GET 查询 / POST 扩容，上限为磁盘总容量的 90%）
+    - 容量配额：  /api/quota（GET 查询；容量在初始化时设定，网页端不可调整）
     - 断点续传：  /api/upload_status, /api/upload_chunk, /api/upload_finalize, /api/upload_abort
     - 文件分享：  /api/share（GET 列表 / POST 生成 / DELETE 取消），公开下载 /s/<token>
 
@@ -368,7 +368,7 @@ def quota_exceeded(additional):
 def quota_error_response():
     return jsonify(
         ok=False,
-        error="云盘容量不足，请在「设置」中增加云盘容量",
+        error="云盘剩余容量不足，请删除部分文件后重试（云盘容量在初始化时设定）",
         code="quota",
     ), 403
 
@@ -401,20 +401,18 @@ def me():
 
 
 # ----------------------------- 修改密码（网页端） -----------------------------
+# 已登录会话即可修改，无需输入当前密码（用户要求）；仍保留基本防呆校验。
 @app.route("/api/password", methods=["POST"])
 @login_required
 def change_password():
     global PASSWORD_HASH, PASSWORD_SALT
     data = request.get_json(silent=True) or {}
-    old_input = data.get("oldPassword", "")
-    if not verify_password(old_input):
-        return jsonify(ok=False, error="旧密码错误"), 400
     new = str(data.get("newPassword", ""))
     if len(new) < 6:
         return jsonify(ok=False, error="新密码至少 6 位"), 400
-    if new == old_input or verify_password(new):
-        # 新旧一致：无论当前哈希还是初始哈希，都不能重复沿用
-        return jsonify(ok=False, error="新密码不能与旧密码相同"), 400
+    if verify_password(new):
+        # 新密码与当前密码一致：无论当前哈希还是初始哈希，都不能重复沿用
+        return jsonify(ok=False, error="新密码不能与当前密码相同"), 400
     if INITIAL_HASH:
         try:
             calc_initial = hashlib.pbkdf2_hmac(
@@ -454,31 +452,6 @@ def quota_info():
         diskTotal=du.total,
         diskFree=du.free,
     )
-
-
-@app.route("/api/quota", methods=["POST"])
-@login_required
-def set_quota():
-    global QUOTA
-    data = request.get_json(silent=True) or {}
-    try:
-        nb = int(data.get("quota"))
-    except (TypeError, ValueError):
-        abort(400, "参数错误")
-    du = shutil.disk_usage(str(ROOT))
-    max_q = int(du.total * 0.9)  # 云盘容量最多为磁盘总容量的 90%
-    if nb <= 0:
-        abort(400, "容量必须大于 0")
-    if nb > max_q:
-        return jsonify(ok=False, error=f"云盘容量不能超过磁盘总容量的 90%（约 {max_q // (1024**3)} GB）"), 400
-    if nb < used_bytes():
-        return jsonify(ok=False, error="云盘容量不能小于当前已用容量"), 400
-    QUOTA = nb
-    try:
-        update_env_file({"CFM_QUOTA": str(nb)})
-    except Exception as e:
-        print(f"[警告] 写回 .env 失败（本次运行内仍生效，重启后回退）：{e}")
-    return jsonify(ok=True, quota=QUOTA)
 
 
 @app.route("/")
@@ -588,12 +561,7 @@ def upload_status():
     mtime = int(data.get("mtime", 0) or 0)
     base = safe_path(rel)
 
-    # 已完成判定：目标位置已存在同名且大小一致的文件 → 直接跳过整段上传
-    dest = base / name
-    if dest.is_file() and size > 0 and dest.stat().st_size == size:
-        return jsonify(ok=True, done=True, name=name)
-
-    # 容量校验：文件总大小超过剩余云盘容量时直接拒绝（提示玩家去设置里扩容）
+    # 容量校验：文件总大小超过剩余云盘容量时直接拒绝（提示去清理文件）
     if quota_exceeded(size):
         return quota_error_response()
 
@@ -601,9 +569,9 @@ def upload_status():
     d = UPLOAD_DIR / uid
     d.mkdir(parents=True, exist_ok=True)
 
-    # 同名文件已存在但内容不同 → 自动改名（a.txt → a (1).txt），不覆盖原文件
+    # 云盘里已有同名文件（无论大小是否一致）→ 一律自动改名（a.txt → a (1).txt），绝不覆盖、绝不跳过
     final_name = name
-    if dest.exists():
+    if (base / name).exists():
         final_name = unique_name(base, name)
     meta_f = d / "meta.json"
     if meta_f.is_file():

@@ -33,30 +33,38 @@
       </div>
       <div class="topbar-right">
         <span id="quota-badge" class="quota-badge" title="云盘容量使用情况">💾 …</span>
-        <button id="btn-pickdir" class="btn ghost" title="选择下载保存到哪个文件夹（桌面浏览器）">📥 下载目录</button>
+        <button id="btn-shares" class="btn ghost" title="管理所有分享链接">🔗 分享</button>
         <button id="btn-settings" class="btn ghost" title="设置">⚙️ 设置</button>
         <button id="btn-logout" class="btn ghost">退出</button>
       </div>
     </header>
 
     <div class="toolbar">
-      <nav id="breadcrumb" class="breadcrumb"></nav>
-      <div class="toolbar-actions">
-        <div class="search-wrap">
-          <input id="search-input" class="search-input" type="search"
-                 placeholder="🔍 搜索文件名…" autocomplete="off" />
-          <button id="search-clear" class="search-clear hidden" title="清除搜索">✕</button>
+      <div class="toolbar-row">
+        <nav id="breadcrumb" class="breadcrumb"></nav>
+        <div class="toolbar-view">
+          <div class="search-wrap">
+            <input id="search-input" class="search-input" type="search"
+                   placeholder="🔍 搜索文件名…" autocomplete="off" />
+            <button id="search-clear" class="search-clear hidden" title="清除搜索">✕</button>
+          </div>
+          <select id="sort-select" class="sort-select" title="排序方式">
+            <option value="name">按名称</option>
+            <option value="time">按时间</option>
+            <option value="type">按类型</option>
+          </select>
+          <button id="sort-dir" class="btn ghost sort-dir" title="切换升序/降序">↑</button>
         </div>
-        <select id="sort-select" class="sort-select" title="排序方式">
-          <option value="name">按名称</option>
-          <option value="time">按时间</option>
-          <option value="type">按类型</option>
-        </select>
-        <button id="sort-dir" class="btn ghost sort-dir" title="切换升序/降序">↑</button>
-        <button id="btn-mkdir" class="btn">📁 新建</button>
-        <button id="btn-upload" class="btn primary">⬆️ 上传</button>
-        <button id="btn-dldown" class="btn" disabled>⬇️ 下载选中</button>
-        <button id="btn-del" class="btn danger" disabled>🗑 删除选中</button>
+      </div>
+      <div class="toolbar-row toolbar-row-acts">
+        <span id="tb-count" class="tb-count"></span>
+        <div class="toolbar-actions">
+          <button id="btn-mkdir" class="btn">📁 新建</button>
+          <button id="btn-upload" class="btn primary">⬆️ 上传</button>
+          <span class="tb-sep" aria-hidden="true"></span>
+          <button id="btn-dldown" class="btn" disabled>⬇️ 下载选中</button>
+          <button id="btn-del" class="btn danger" disabled>🗑 删除选中</button>
+        </div>
         <input id="file-input" type="file" multiple hidden />
       </div>
     </div>
@@ -114,39 +122,39 @@
           <button id="st-close" class="pv-x" title="关闭 (Esc)">✕</button>
         </div>
 
-        <!-- 云盘容量 -->
-        <section class="st-section">
-          <h3 class="st-h">💾 云盘容量</h3>
-          <div class="st-quota-track"><div id="st-quota-bar" class="st-quota-bar"></div></div>
-          <div id="st-quota-text" class="st-quota-text">—</div>
-          <div id="st-quota-widget">
-            <input id="st-quota-range" class="st-range" type="range" min="0" max="100" step="1" value="0" />
-            <div class="st-scale"><span>当前</span><span id="st-quota-new" class="st-quota-new">—</span><span>上限</span></div>
-            <div class="st-row">
-              <div class="st-inc">
-                <input id="st-quota-input" type="number" min="1" step="1" inputmode="numeric" placeholder="增加容量" />
-                <span class="st-inc-unit">GB</span>
-              </div>
-              <button id="st-quota-btn" class="btn primary">确认扩容</button>
-            </div>
-          </div>
-          <div id="st-quota-hint" class="st-hint">—</div>
-        </section>
-
-        <!-- 修改密码 -->
+        <!-- 修改密码（无需输入当前密码） -->
         <section class="st-section">
           <h3 class="st-h">🔑 修改登录密码</h3>
-          <input id="st-oldpw" type="password" placeholder="当前密码" autocomplete="current-password" />
           <input id="st-newpw" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" />
           <input id="st-newpw2" type="password" placeholder="确认新密码" autocomplete="new-password" />
           <button id="st-pw-btn" class="btn primary st-full">确认修改</button>
           <div id="st-msg" class="st-msg"></div>
+          <div class="st-hint">修改成功后会自动退出登录，请用新密码重新登录。</div>
         </section>
 
-        <!-- 分享链接管理 -->
+        <!-- 下载目录（桌面浏览器） -->
         <section class="st-section">
-          <h3 class="st-h">🔗 分享链接管理</h3>
+          <h3 class="st-h">📥 下载保存目录</h3>
+          <div class="st-dldir">
+            <span class="st-dldir-label">当前：</span>
+            <span id="dl-dir-name" class="st-dldir-name">默认下载位置</span>
+          </div>
+          <button id="btn-pickdir" class="btn st-full">选择文件夹…</button>
+          <div class="st-hint">选一次之后，下载的文件都会直接保存到该文件夹（需浏览器支持，如电脑版 Chrome / Edge）；不支持时使用浏览器默认下载位置。</div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 分享链接管理（独立界面） -->
+    <div id="shares-modal" class="modal-mask hidden">
+      <div class="modal-card wide" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span class="modal-title">🔗 分享链接管理</span>
+          <button id="sm-close" class="pv-x" title="关闭 (Esc)">✕</button>
+        </div>
+        <section class="st-section">
           <div id="sh-list" class="sh-list"><div class="st-hint">加载中…</div></div>
+          <div class="st-hint">在文件行或预览界面上点 🔗 可生成免登录下载链接；对方打开链接即可直接下载。</div>
         </section>
       </div>
     </div>
@@ -187,7 +195,6 @@
         </div>
         <div class="force-tip">为保障安全，首次使用必须修改初始密码，修改后需重新登录。</div>
         <section class="st-section">
-          <input id="fc-oldpw" type="password" placeholder="当前（初始）密码" autocomplete="current-password" />
           <input id="fc-newpw" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" />
           <input id="fc-newpw2" type="password" placeholder="确认新密码" autocomplete="new-password" />
           <button id="fc-btn" class="btn primary st-full">修改密码并重新登录</button>

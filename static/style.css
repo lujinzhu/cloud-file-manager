@@ -179,12 +179,29 @@ body {
 .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: none; }
 .btn.small { padding: 6px 12px; font-size: 13px; }
 
-/* ---------- 工具栏 / 面包屑 ---------- */
+/* ---------- 工具栏 / 面包屑（两行布局：上行定位+检索，下行操作） ---------- */
 .toolbar {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 10px; padding: 11px 18px; background: var(--panel);
-  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 10px 18px 11px; background: var(--panel);
+  border-bottom: 1px solid var(--border);
   box-shadow: var(--shadow-1);
+}
+.toolbar-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; min-width: 0;
+}
+.toolbar-view { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; }
+.toolbar-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-left: auto;   /* 操作按钮整体靠右，与左侧项目计数平衡 */
+}
+.tb-count {
+  font-size: 12.5px; color: var(--ink-3); white-space: nowrap;
+  font-variant-numeric: tabular-nums; font-family: var(--mono);
+}
+.tb-sep {
+  width: 1px; height: 20px; background: var(--border-strong);
+  margin: 0 3px; flex: 0 0 auto;
 }
 .breadcrumb { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; font-size: 14px; min-width: 0; }
 .crumb { color: var(--primary); cursor: pointer; padding: 3px 7px; border-radius: 7px; transition: background .15s; }
@@ -194,7 +211,6 @@ body {
 .crumb.sep:hover { background: transparent; }
 .crumb.current { color: var(--ink); font-weight: 600; cursor: default; }
 .crumb.current:hover { background: transparent; }
-.toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* ---------- 文件列表 ---------- */
 .filelist {
@@ -411,57 +427,23 @@ body {
 .st-msg.err { color: var(--danger); }
 .st-msg.ok { color: var(--ok); }
 .st-hint { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
-.st-quota-track { height: 10px; border-radius: 99px; background: #ecebe4; overflow: hidden; }
-.st-quota-bar {
-  height: 100%; width: 0%; border-radius: 99px;
-  background: var(--primary);
-  transition: width .3s var(--ease);
-}
-.st-quota-bar.warn { background: var(--danger); }
-.st-quota-text { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 
-/* 扩容滑条 */
-.st-range {
-  -webkit-appearance: none; appearance: none;
-  width: 100%; height: 26px; background: transparent; cursor: pointer; margin: 0;
+/* 设置 → 下载保存目录 */
+.st-dldir {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 9px 12px; border: 1px dashed var(--border-strong);
+  border-radius: var(--radius); background: #fbfaf7; min-width: 0;
 }
-.st-range::-webkit-slider-runnable-track {
-  height: 6px; border-radius: 99px;
-  background: linear-gradient(90deg, var(--primary) var(--fill, 0%), #e3e1d9 var(--fill, 0%));
+.st-dldir-label { font-size: 12.5px; color: var(--ink-3); flex: 0 0 auto; }
+.st-dldir-name {
+  font-size: 13px; font-weight: 600; color: var(--primary);
+  font-family: var(--mono); word-break: break-all; min-width: 0;
 }
-.st-range::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none;
-  width: 20px; height: 20px; margin-top: -7px;
-  border-radius: 50%; background: #fff;
-  border: 3px solid var(--primary);
-  box-shadow: 0 2px 6px rgba(25, 24, 34, .25);
-  transition: transform .12s;
-}
-.st-range:active::-webkit-slider-thumb { transform: scale(1.15); }
-.st-range::-moz-range-track { height: 6px; border-radius: 99px; background: #e3e1d9; }
-.st-range::-moz-range-progress { height: 6px; border-radius: 99px; background: var(--primary); }
-.st-range::-moz-range-thumb {
-  width: 14px; height: 14px; border-radius: 50%;
-  background: #fff; border: 3px solid var(--primary);
-}
-.st-range:disabled { cursor: not-allowed; opacity: .5; }
-.st-scale {
-  display: flex; justify-content: space-between; align-items: baseline;
-  font-size: 11px; color: var(--ink-3); margin-top: 2px;
-}
-.st-quota-new {
-  font-family: var(--mono); font-size: 13px; font-weight: 700;
-  color: var(--primary); font-variant-numeric: tabular-nums;
-}
-.st-inc { position: relative; flex: 1; display: flex; align-items: center; }
-.st-inc input { padding-right: 40px; }
-.st-inc-unit {
-  position: absolute; right: 12px; font-size: 12px; color: var(--ink-3);
-  font-family: var(--mono); pointer-events: none;
-}
-.st-quota-widget.maxed { opacity: .55; }
 
-/* ---------- 分享链接 ---------- */
+/* 分享管理（独立界面，卡片加宽） */
+.modal-card.wide { width: min(560px, 94vw); }
+
+/* 单文件分享弹窗 */
 .sh-name {
   font-size: 13.5px; font-weight: 600; color: var(--ink);
   word-break: break-all; line-height: 1.5;
@@ -472,6 +454,7 @@ body {
   cursor: text; user-select: all;
 }
 .sh-expire { flex: 1; min-width: 0; }
+
 .sh-list { display: flex; flex-direction: column; gap: 8px; }
 .sh-item {
   display: flex; align-items: center; gap: 10px;
@@ -599,6 +582,8 @@ body {
 
 /* ---------- 移动端适配 ---------- */
 @media (max-width: 600px) {
+  .toolbar { padding: 9px 12px 10px; gap: 8px; }
+  .toolbar-actions { gap: 6px; }
   .toolbar-actions .btn { padding: 8px 11px; font-size: 13px; }
   .topbar-right .btn { padding: 7px 9px; font-size: 13px; }
   .brand-text { font-size: 16px; }
@@ -612,4 +597,6 @@ body {
   .pv-modal { padding: 10px; }
   .pv-card { width: 96vw; height: 90vh; border-radius: 12px; }
   .quota-badge { display: none; }   /* 小屏空间有限，容量信息进设置里看 */
+  .tb-sep { display: none; }
+  .tb-count { display: none; }
 }

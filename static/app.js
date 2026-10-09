@@ -188,6 +188,7 @@
     $("#app").classList.add("hidden");
     closeForceModal();
     closeSettings();
+    closeSharesModal();
   }
   function showApp() { $("#login").classList.add("hidden"); $("#app").classList.remove("hidden"); }
 
@@ -224,7 +225,7 @@
     showLogin();
   });
 
-  /* ---------------- 云盘容量（顶栏徽章 + 设置菜单） ---------------- */
+  /* ---------------- 云盘容量（顶栏徽章） ---------------- */
   async function loadQuota() {
     try {
       const r = await fetch("api/quota");
@@ -232,7 +233,6 @@
       const j = await r.json();
       state.quota = j;
       renderQuotaBadge(j);
-      if (!$("#settings-modal").classList.contains("hidden")) renderSettingsQuota(j);
     } catch (_) {}
   }
 
@@ -243,7 +243,7 @@
     const free = Math.max(0, q.quota - q.used);
     el.textContent = `💾 已用 ${fmtSize(q.used)} / ${fmtSize(q.quota)}  (${pct}%)`;
     el.classList.toggle("warn", q.used / q.quota >= 0.9);
-    el.title = `已用 ${fmtSize(q.used)}，总容量 ${fmtSize(q.quota)}，剩余 ${fmtSize(free)}（磁盘总容量 ${fmtSize(q.diskTotal)}）`;
+    el.title = `已用 ${fmtSize(q.used)}，总容量 ${fmtSize(q.quota)}，剩余 ${fmtSize(free)}`;
   }
 
   /* ---------------- 文件分享（免登录下载链接） ---------------- */
@@ -324,16 +324,26 @@
     if (ok) { const b = $("#sh-copy"); b.textContent = "已复制"; setTimeout(() => (b.textContent = "复制"), 1800); }
   });
   $("#sh-revoke").addEventListener("click", async () => {
-    if (!shareState.token) { toast("当前没有可停止的分享"); return; }
+    if (!shareState.token) { closeShareModal(); return; }
     await fetch("api/share", { method: "DELETE", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: shareState.token }) }).catch(() => {});
     shareState.token = "";
-    $("#sh-url").value = "";
-    $("#sh-msg").textContent = "已停止分享，旧链接立即失效"; $("#sh-msg").className = "st-msg";
-    toast("已停止分享");
+    toast("已停止分享，旧链接立即失效");
+    closeShareModal();   // 停止分享后直接关闭弹窗
   });
 
-  // 设置 → 分享链接管理
+  /* ---------------- 分享链接管理（独立界面） ---------------- */
+  function openSharesModal() {
+    renderShareList();
+    $("#shares-modal").classList.remove("hidden");
+  }
+  function closeSharesModal() { $("#shares-modal").classList.add("hidden"); }
+
+  $("#btn-shares").addEventListener("click", openSharesModal);
+  $("#sm-close").addEventListener("click", closeSharesModal);
+  $("#shares-modal").addEventListener("click", (e) => { if (e.target.id === "shares-modal") closeSharesModal(); });
+
+  // 分享链接管理列表
   async function renderShareList() {
     const box = $("#sh-list");
     let j;
@@ -377,134 +387,33 @@
   /* ---------------- 设置二级菜单 ---------------- */
   function openSettings() {
     $("#st-msg").textContent = ""; $("#st-msg").className = "st-msg";
-    $("#st-oldpw").value = $("#st-newpw").value = $("#st-newpw2").value = "";
-    $("#st-quota-input").value = "";
-    renderSettingsQuota(state.quota);
-    renderShareList();
+    $("#st-newpw").value = $("#st-newpw2").value = "";
+    renderDlDir();
     $("#settings-modal").classList.remove("hidden");
   }
   function closeSettings() { $("#settings-modal").classList.add("hidden"); }
-
-  function renderSettingsQuota(q) {
-    if (!q) return;
-    const GB = 1024 ** 3;
-    const bar = $("#st-quota-bar"), txt = $("#st-quota-text"), hint = $("#st-quota-hint");
-    const widget = $("#st-quota-widget");
-    const range = $("#st-quota-range"), input = $("#st-quota-input"),
-          btn = $("#st-quota-btn"), newTxt = $("#st-quota-new");
-    const maxQ = Math.floor(q.diskTotal * 0.9);        // 硬上限：磁盘 90%
-    const curQ = q.quota || Math.ceil(q.used / GB) * GB || GB; // 未设容量时以已用向上取整为起点
-    const maxGB = Math.floor(maxQ / GB);
-
-    // 顶栏进度条
-    const pct = q.quota ? Math.min(100, (q.used / q.quota) * 100) : 0;
-    bar.style.width = pct + "%";
-    bar.classList.toggle("warn", pct >= 90);
-    txt.textContent = q.quota
-      ? `已用 ${fmtSize(q.used)} / ${fmtSize(q.quota)}（${pct.toFixed(1)}%）· 剩余 ${fmtSize(Math.max(0, q.quota - q.used))}`
-      : `已用 ${fmtSize(q.used)} · 未设容量上限（磁盘总容量 ${fmtSize(q.diskTotal)}）`;
-
-    // 滑条范围：当前容量 → 磁盘 90%；已到顶则整体置灰不可扩容
-    if (maxGB <= Math.floor(curQ / GB)) {
-      range.disabled = true; input.disabled = true; btn.disabled = true;
-      widget.classList.add("maxed");
-      newTxt.textContent = "已无可扩容空间";
-      hint.textContent = `云盘容量已达到磁盘总容量的 90%（${fmtSize(maxQ)}）上限，无法继续扩容`;
-      return;
-    }
-    range.disabled = false; input.disabled = false; btn.disabled = false;
-    widget.classList.remove("maxed");
-    range.min = String(Math.floor(curQ / GB));
-    range.max = String(maxGB);
-    range.step = "1";
-    range.value = range.min;
-    input.value = "";
-    newTxt.textContent = `${Math.floor(curQ / GB)} GB → ${Math.floor(curQ / GB)} GB（+0 GB）`;
-    hint.textContent = `拖动滑条或输入要增加的容量（GB），上限为磁盘总容量的 90%（${maxGB} GB）`;
-  }
-
-  // 滑条 ↔ 增量输入框 双向联动（增量语义：当前容量 + 增量）
-  function quotaRangeFill() {
-    const r = $("#st-quota-range");
-    const min = Number(r.min) || 0, max = Number(r.max) || 1;
-    const pct = ((Number(r.value) - min) / (max - min)) * 100;
-    r.style.setProperty("--fill", Math.max(0, Math.min(100, pct)) + "%");
-  }
-  function quotaTargetBytes() {
-    const GB = 1024 ** 3;
-    return Number($("#st-quota-range").value) * GB;
-  }
-  function quotaSyncFromRange() {
-    const GB = 1024 ** 3;
-    const q = state.quota; if (!q) return;
-    const cur = q.quota || Math.ceil(q.used / GB) * GB || GB;
-    const target = quotaTargetBytes();
-    const add = Math.max(0, Math.round((target - cur) / GB));
-    $("#st-quota-input").value = add || "";
-    $("#st-quota-new").textContent =
-      `${Math.floor(cur / GB)} GB → ${Math.floor(target / GB)} GB（+${add} GB）`;
-    quotaRangeFill();
-  }
-  function quotaSyncFromInput() {
-    const GB = 1024 ** 3;
-    const q = state.quota; if (!q) return;
-    const cur = q.quota || Math.ceil(q.used / GB) * GB || GB;
-    const add = parseFloat($("#st-quota-input").value);
-    if (!isFinite(add) || add <= 0) { quotaSyncFromRange(); return; }
-    const target = Math.min(Math.floor(q.diskTotal * 0.9 / GB), Math.floor(cur / GB) + Math.floor(add));
-    $("#st-quota-range").value = String(target);
-    $("#st-quota-new").textContent =
-      `${Math.floor(cur / GB)} GB → ${target} GB（+${Math.max(0, target - Math.floor(cur / GB))} GB）`;
-    quotaRangeFill();
-  }
-  $("#st-quota-range").addEventListener("input", quotaSyncFromRange);
-  $("#st-quota-input").addEventListener("input", quotaSyncFromInput);
 
   $("#btn-settings").addEventListener("click", openSettings);
   $("#st-close").addEventListener("click", closeSettings);
   $("#settings-modal").addEventListener("click", (e) => { if (e.target.id === "settings-modal") closeSettings(); });
 
-  $("#st-quota-btn").addEventListener("click", async () => {
-    const msg = $("#st-msg");
-    const cur = state.quota.quota || 0;
-    const target = quotaTargetBytes();
-    const addGB = parseFloat($("#st-quota-input").value);
-    if (!isFinite(addGB) || addGB <= 0) { msg.textContent = "请输入要增加的容量（GB）"; msg.className = "st-msg err"; return; }
-    if (target <= cur) { msg.textContent = "增加量太小，容量没有变化"; msg.className = "st-msg err"; return; }
-    const r = await fetch("api/quota", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ quota: target }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok) {
-      msg.textContent = `云盘容量已扩至 ${fmtSize(j.quota)}`; msg.className = "st-msg ok";
-      state.quota.quota = j.quota;
-      renderSettingsQuota(state.quota);
-      renderQuotaBadge(state.quota);
-      toast(`云盘容量已扩至 ${fmtSize(j.quota)}`);
-    } else {
-      msg.textContent = j.error || "设置失败"; msg.className = "st-msg err";
-      loadQuota();  // 服务端校验更严格，回读真实状态
-    }
-  });
-
-  // 修改密码（设置菜单内）：成功后服务端已登出 → 回登录页重新登录
+  // 修改密码（设置菜单内）：无需当前密码；成功后服务端已登出 → 回登录页重新登录
   $("#st-pw-btn").addEventListener("click", () => doChangePassword({
-    old: $("#st-oldpw"), nw: $("#st-newpw"), nw2: $("#st-newpw2"), msg: $("#st-msg"),
+    nw: $("#st-newpw"), nw2: $("#st-newpw2"), msg: $("#st-msg"),
   }));
 
   /* ---------------- 首次登录强制修改密码 ---------------- */
   function openForceModal() {
-    $("#fc-oldpw").value = $("#fc-newpw").value = $("#fc-newpw2").value = "";
+    $("#fc-newpw").value = $("#fc-newpw2").value = "";
     $("#fc-msg").textContent = ""; $("#fc-msg").className = "st-msg";
     $("#force-modal").classList.remove("hidden");
-    setTimeout(() => $("#fc-oldpw").focus(), 120);
+    setTimeout(() => $("#fc-newpw").focus(), 120);
   }
   function closeForceModal() { $("#force-modal").classList.add("hidden"); }
 
   $("#fc-btn").addEventListener("click", async () => {
     const ok = await doChangePassword({
-      old: $("#fc-oldpw"), nw: $("#fc-newpw"), nw2: $("#fc-newpw2"), msg: $("#fc-msg"),
+      nw: $("#fc-newpw"), nw2: $("#fc-newpw2"), msg: $("#fc-msg"),
     });
     if (ok) {
       closeForceModal();
@@ -517,15 +426,14 @@
 
   async function doChangePassword(els) {
     const msg = els.msg;
-    const oldPw = els.old.value, nw = els.nw.value, nw2 = els.nw2.value;
+    const nw = els.nw.value, nw2 = els.nw2.value;
     msg.textContent = ""; msg.className = "st-msg";
-    if (!oldPw) { msg.textContent = "请输入当前密码"; msg.className = "st-msg err"; return false; }
     if (nw.length < 6) { msg.textContent = "新密码至少 6 位"; msg.className = "st-msg err"; return false; }
     if (nw !== nw2) { msg.textContent = "两次输入的新密码不一致"; msg.className = "st-msg err"; return false; }
     try {
       const r = await fetch("api/password", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ oldPassword: oldPw, newPassword: nw }),
+        body: JSON.stringify({ newPassword: nw }),
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) return true;
@@ -637,6 +545,8 @@
     const box = $("#filelist");
     box.innerHTML = "";
     const items = sortedItems(state.items);
+    $("#tb-count").textContent = items.length
+      ? `共 ${items.length} 项` : "";
     if (!items.length) {
       box.innerHTML = state.mode === "search"
         ? '<div class="empty"><div class="empty-ico">🔍</div><div class="empty-t">没有匹配的文件</div><div class="empty-s">换个关键词试试</div></div>'
@@ -667,7 +577,9 @@
       const meta = document.createElement("div");
       meta.className = "meta";
       meta.innerHTML = `<div class="name">${esc(it.name)}</div>
-        <div class="sub">${locTag}${it.type === "dir" ? "文件夹" : fmtSize(it.size) + " · " + fmtTime(it.mtime)}</div>`;
+        <div class="sub">${locTag}${it.type === "dir"
+          ? "文件夹"
+          : `${fmtSize(it.size)} · <span title="上传时间">上传于 ${fmtTime(it.mtime)}</span>`}</div>`;
       meta.onclick = () => {
         if (it.type === "dir") {
           const target = state.mode === "search" ? rel : rel; // 搜索结果同样进入其真实目录
@@ -795,9 +707,8 @@
         mtime: file.lastModified || 0,
       };
 
-      // 1) 询问服务端：能否秒传 / 已收到哪些分片
+      // 1) 询问服务端：续传会话 / 已收到哪些分片（同名文件由服务端自动改名，绝不跳过）
       const st = await withRetry(() => postJSON("api/upload_status", payload));
-      if (st.done) { item.done("文件已存在，已跳过"); return { skipped: true }; }
 
       // 云盘里已有同名文件 → 服务端会自动改名保存，这里提前告知最终文件名
       const finalName = st.finalName || file.name;
@@ -859,30 +770,27 @@
   async function uploadFiles(files) {
     if (!files || !files.length) return;
     ensurePanel();
-    let ok = 0, skip = 0, fail = 0, renamed = 0;
+    let ok = 0, fail = 0, renamed = 0;
     for (const f of files) {
       const r = await uploadOne(f);
-      if (r.quota) break;               // 容量不足：停止后续上传，弹出设置
-      if (r.skipped) skip++;
-      else if (r.ok) { ok++; if (r.savedName && r.savedName !== f.name) renamed++; }
+      if (r.quota) break;               // 容量不足：停止后续上传
+      if (r.ok) { ok++; if (r.savedName && r.savedName !== f.name) renamed++; }
       else fail++;
     }
     loadList(state.currentPath);
     loadQuota();   // 上传后刷新容量显示
     if (uploadFiles.quotaHit) {
       uploadFiles.quotaHit = false;
-      toast("云盘容量不足，请点右上角「⚙️ 设置」增加云盘容量");
+      toast("云盘剩余容量不足，上传已停止；可删除部分文件后重试");
       const p = $("#upload-panel"); p.classList.add("hidden"); $("#up-list").innerHTML = "";
-      openSettings();
       return;
     }
     let msg = `上传完成：成功 ${ok}`;
-    if (skip) msg += `，跳过 ${skip}`;
     if (renamed) msg += `，${renamed} 个重名已自动改名`;
     if (fail) msg += `，失败 ${fail}`;
     toast(msg);
 
-    // 全部成功（含跳过）后稍等片刻自动收起面板；有失败则保留，方便查看错误
+    // 全部成功后稍等片刻自动收起面板；有失败则保留，方便查看错误
     if (fail === 0) {
       clearTimeout(uploadFiles._t);
       uploadFiles._t = setTimeout(() => {
@@ -967,6 +875,7 @@
     if (!$("#force-modal").classList.contains("hidden")) return;   // 强制改密弹窗不可 Esc 关闭
     if (!$("#preview-modal").classList.contains("hidden")) closePreview();
     if (!$("#share-modal").classList.contains("hidden")) closeShareModal();
+    if (!$("#shares-modal").classList.contains("hidden")) closeSharesModal();
     if (!$("#settings-modal").classList.contains("hidden")) closeSettings();
   });
 
@@ -1110,9 +1019,16 @@
     try {
       const dir = await window.showDirectoryPicker();
       state.dlDir = dir;
+      renderDlDir();
       toast(`下载目录已设为：${dir.name}`);
     } catch (_) { /* 用户取消 */ }
   });
+
+  // 设置 → 下载保存目录：显示当前所选目录
+  function renderDlDir() {
+    const el = $("#dl-dir-name");
+    if (el) el.textContent = state.dlDir ? state.dlDir.name : "默认下载位置";
+  }
 
   /* ---------------- 新建文件夹 ---------------- */
   $("#btn-mkdir").addEventListener("click", async () => {
