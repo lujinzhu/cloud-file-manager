@@ -177,6 +177,120 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
+## 配置 nginx 子路径访问（免端口）
+
+配好之后可用 `http://公网IP/yunpan` 访问，不用再带 `:8000`。`install.sh` 会自动询问并配置；
+如果你跳过了那一步、或 nginx 当时正在运行没让停，可以按这一节手动配置。
+
+### 1. 安装 nginx
+
+```bash
+# CentOS / Rocky / AlmaLinux
+yum install -y nginx
+# Debian / Ubuntu
+apt-get update && apt-get install -y nginx
+```
+
+### 2. 写子路径反代配置
+
+新建 `/etc/nginx/conf.d/yunpan.conf`（后端端口若不是 8000，把三处 `8000` 一起改掉）：
+
+```nginx
+# 私人云盘：/yunpan 反代到本机 8000 端口
+server {
+    listen 80;
+    server_name _;
+
+    location = /yunpan { return 301 /yunpan/; }
+
+    location /yunpan/ {
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        client_max_body_size 0;
+        proxy_request_buffering off;
+    }
+
+    # 分享链接：/s/<token> 免登录下载（同样透传给后端）
+    location /s/ {
+        proxy_pass http://127.0.0.1:8000/s/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_request_buffering off;
+    }
+}
+```
+
+要点：
+
+- `location = /yunpan` 的 301 **不能省**。前端用的是相对路径，页面 URL 必须以 `/` 结尾，
+  少了这条会变成从 `/` 下找资源，页面白屏或样式全丢。
+- `proxy_pass` 结尾的 `/` 不能省，它负责把 `/yunpan/xxx` 剥成 `/xxx` 再交给后端。
+- `client_max_body_size 0` 表示不限制上传体积；`proxy_request_buffering off` 让上传边收边传。
+- 想换个路径名（比如 `/pan`），把上面三处 `yunpan` 一起改掉即可，其它不用动。
+
+### 3. 处理默认站点抢占 80 端口
+
+```bash
+# Debian / Ubuntu：注释掉默认站点
+rm -f /etc/nginx/sites-enabled/default
+
+# CentOS：nginx.conf 内置站点带了 default_server，会抢在前面
+grep -n "default_server" /etc/nginx/nginx.conf
+# 把 listen 80 default_server 改成 listen 80（[::]:80 同理）
+```
+
+改完可用 `ss -tlnp | grep ':80 '` 确认 80 端口归谁。
+
+### 4. 确保 conf.d 被加载
+
+自编译或精简版 nginx 的 `nginx.conf` 可能没有 include 这一句：
+
+```bash
+grep -n "conf.d" /etc/nginx/nginx.conf
+```
+
+没有的话在 `http {` 下面加一行（改前先备份）：
+
+```bash
+cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
+sed -i 's|^\([[:space:]]*http[[:space:]]*{\)|\1\n    include /etc/nginx/conf.d/*.conf;|' /etc/nginx/nginx.conf
+```
+
+### 5. 校验并生效
+
+```bash
+nginx -t                      # 必须先通过，否则别 reload
+systemctl enable --now nginx  # 开机自启并启动
+systemctl reload nginx        # 已运行则平滑重载
+curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1/yunpan/   # 应返回 200
+```
+
+### 6. 放行 80 端口
+
+云服务器（腾讯云轻量/阿里云等）的安全组/防火墙要放行 **80**，否则外网打不开：
+
+```bash
+firewall-cmd --permanent --add-service=http && firewall-cmd --reload   # firewalld
+iptables -I INPUT -p tcp --dport 80 -j ACCEPT                          # iptables
+```
+
+### 7. 排障清单
+
+| 现象                          | 检查                                                            |
+| --------------------------- | ------------------------------------------------------------- |
+| `nginx -t` 报错               | 按提示看行号；多数是 `conf.d` 没创建或多写了 `server` 块                          |
+| 本机 curl 返回 000 / 连不上         | 云盘服务没起：`systemctl status cloudfile`；或后端端口不是 8000                 |
+| 返回 404                      | `conf.d` 没被 include，或 `location = /yunpan` 那条 301 被删了           |
+| 页面能开但样式/脚本 404              | 访问地址少了结尾斜杠，用 `http://IP/yunpan/`                             |
+| 外网打不开、本机 curl 正常            | 安全组没放行 80                                                      |
+| 打开是 nginx 欢迎页               | 默认站点没删 / `default_server` 没去掉，见第 3 步                            |
+
+> nginx 上已经跑了别的站点时，`install.sh` 会提示"是否允许停止 nginx 服务"。
+> 选 n 就跳过不改（已有站点不受影响），按这一节手动并入你现有的 server 块即可。
+
 ## 兼容老系统（CentOS 7 / Python 3.6）
 
 Python 3.6 需锁版本安装依赖（install.sh 会自动识别并使用锁版本）：
@@ -222,7 +336,17 @@ pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ## 版本说明
 
-### v1.6.0（当前）
+### v1.6.1（当前）
+
+- **同一文件重复分享只保留一条链接**：生成新分享前，服务端自动作废该文件的旧分享记录（之前多点几次会堆积多条同文件链接）
+- **云盘为空时已用容量如实显示 `0 B`**：修复空盘时顶栏显示「已用 —」的问题（0 B / 空文件同样如实显示）
+- **刷新网页不再闪登录界面**：新增启动加载层（☁️ 正在进入云盘…），登录态确认前登录页与主界面都保持隐藏；脚本加载失败时 8 秒兜底放行
+- **nginx 未生效时不再显示免端口链接**：安装横幅只在本机自检（/yunpan 返回 200）通过时展示免端口地址；未通过 / 被跳过时提示按说明文档自行配置
+- **配置 nginx 前先询问是否停止正在运行的 nginx**：同意则停止并继续配置，不同意则跳过该步进入下一步（已有站点不受影响）
+- README 新增**「配置 nginx 子路径访问（免端口）」完整章节**：conf 全文、301 跳转与相对路径要点、默认站点处理、conf.d include 注入、校验重载、80 端口放行与排障清单
+- Service Worker 缓存版本 cfm-v6
+
+### v1.6.0
 
 - **分享链接管理独立成界面**：顶栏新增「🔗 分享」按钮打开专门的分享管理弹窗（加宽卡片、每条链接显示大小 / 到期 / 下载次数，可复制 / 作废），不再塞在设置里
 - **网页端容量设置功能移除**：云盘容量改在**初始化时设定**——install.sh 询问「云盘容量占本地磁盘的百分比」（1-90，回车默认 80%）；服务端删除扩容接口，改 `.env` 的 `CFM_QUOTA` 重启生效

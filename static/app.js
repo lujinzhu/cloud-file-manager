@@ -2,6 +2,7 @@
 (function () {
   "use strict";
 
+  window.__cfmBooted = true;   // 供 index.html 的兜底脚本判断脚本是否已加载
   const $ = (s) => document.querySelector(s);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -56,7 +57,11 @@
   }
 
   function fmtSize(n) {
-    if (!n) return "—";
+    // 云盘为空 / 空文件时，0 要如实显示为 "0 B"；只有真的没值才显示占位符
+    if (n === null || n === undefined || n === "") return "—";
+    n = Number(n);
+    if (!isFinite(n) || n < 0) return "—";
+    if (n === 0) return "0 B";
     const u = ["B", "KB", "MB", "GB", "TB"];
     let i = 0;
     while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
@@ -183,14 +188,16 @@
     }
   }
 
+  function hideBoot() { const b = $("#boot"); if (b) b.classList.add("hidden"); }
   function showLogin() {
+    hideBoot();
     $("#login").classList.remove("hidden");
     $("#app").classList.add("hidden");
     closeForceModal();
     closeSettings();
     closeSharesModal();
   }
-  function showApp() { $("#login").classList.add("hidden"); $("#app").classList.remove("hidden"); }
+  function showApp() { hideBoot(); $("#login").classList.add("hidden"); $("#app").classList.remove("hidden"); }
 
   $("#login-form").addEventListener("submit", async (e) => {
     e.preventDefault();

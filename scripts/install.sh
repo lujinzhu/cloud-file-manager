@@ -355,9 +355,36 @@ fi
 # ---------------- 5.5 nginx 子路径反代（可选，改变系统先询问） ----------------
 # 配置后可用 http://公网IP/yunpan 访问，无需带端口号
 NGINX_CONF=/etc/nginx/conf.d/yunpan.conf
-NGINX_DONE=0
+NGINX_DONE=0   # 配置已写入并通过 nginx -t
+NGINX_OK=0     # 本机自检 /yunpan 返回 200（真正生效，才在结尾展示免端口地址）
+NGINX_SKIP=0   # 用户选择不停止正在运行的 nginx，主动跳过
+nginx_running() {
+  systemctl is-active --quiet nginx 2>/dev/null && return 0
+  pgrep -x nginx >/dev/null 2>&1 && return 0
+  return 1
+}
+nginx_selfcheck() {
+  command -v curl >/dev/null 2>&1 || return 1
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1/yunpan/)" = "200" ]
+}
 setup_nginx() {
-  # 0) conf.d 目录可能不存在（部分发行版/自编译 nginx），先确保目录在
+  # 0) nginx 正在运行时，先征得用户同意再停止（会短暂中断 nginx 上的其它站点）
+  if nginx_running; then
+    if confirm "nginx 服务正在运行，配置前需要先停止它。是否允许停止 nginx 服务？"; then
+      systemctl stop nginx >/dev/null 2>&1 || nginx -s stop >/dev/null 2>&1 || pkill -x nginx >/dev/null 2>&1
+      sleep 1
+      if nginx_running; then
+        err "nginx 未能停止，跳过 nginx 配置（可手动执行 systemctl stop nginx 后重跑本脚本）"
+        return 1
+      fi
+      ok "已停止 nginx，继续配置"
+    else
+      info "您选择不停止 nginx，跳过 nginx 配置，继续下一步"
+      NGINX_SKIP=1
+      return 1
+    fi
+  fi
+  # 1) conf.d 目录可能不存在（部分发行版/自编译 nginx），先确保目录在
   local conf_dir
   conf_dir=$(dirname "$NGINX_CONF")
   if [ ! -d "$conf_dir" ]; then
@@ -414,13 +441,15 @@ EOF
     systemctl reload nginx >/dev/null 2>&1 || nginx -s reload >/dev/null 2>&1
     sleep 1
     NGINX_DONE=1
-    if command -v curl >/dev/null 2>&1 && [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1/yunpan/)" = "200" ]; then
+    if nginx_selfcheck; then
+      NGINX_OK=1
       ok "nginx 子路径配置完成：http://$PUBLIC_IP/yunpan"
     else
-      warn "nginx 配置已生效，但本机自检未通过。可能原因："
+      warn "nginx 配置已写入并通过校验，但本机自检未通过（免端口地址暂不可用）。可能原因："
       warn "  1) 80 端口被其他站点占用（ss -tlnp | grep ':80 ' 查看）"
       warn "  2) nginx.conf 未加载 conf.d（手动在 http 块加: include /etc/nginx/conf.d/*.conf;）"
       warn "  3) 云服务器安全组未放行 80 端口"
+      warn "  排障后可执行 nginx -s reload；也可按说明文档（README）的 nginx 章节自行配置"
     fi
   else
     err "nginx 配置校验失败（nginx -t），已保留原配置；可检查 $NGINX_CONF 后执行: nginx -s reload"
@@ -443,6 +472,7 @@ if [ -f "$NGINX_CONF" ]; then
     else err "nginx 未安装，请先安装 nginx"; fi
   else
     NGINX_DONE=1
+    nginx_selfcheck && NGINX_OK=1
   fi
 elif command -v nginx >/dev/null 2>&1; then
   if confirm "是否配置 nginx 子路径访问（http://$PUBLIC_IP/yunpan，免端口号）？"; then
@@ -464,7 +494,7 @@ if confirm "是否立即启动服务？"; then
   printf "\n${C_G}==============================================${C_0}\n"
   printf   "${C_G}  安装完成！${C_0}\n"
   printf   "  访问地址： ${C_B}http://%s:%s${C_0}\n" "$PUBLIC_IP" "$PORT_NOW"
-  if [ "$NGINX_DONE" = "1" ]; then
+  if [ "$NGINX_OK" = "1" ]; then
     printf   "  （免端口） ${C_B}http://%s/yunpan${C_0}\n" "$PUBLIC_IP"
   fi
   if [ -n "${CFM_PW_INPUT:-}" ]; then
@@ -476,10 +506,17 @@ if confirm "是否立即启动服务？"; then
   printf   "  管理脚本： bash %s/scripts/menu.sh\n" "$PROJECT_DIR"
   printf   "  项目目录： %s\n" "$PROJECT_DIR"
   printf "${C_G}==============================================${C_0}\n"
-  if [ "$NGINX_DONE" = "1" ]; then
+  if [ "$NGINX_OK" = "1" ]; then
     printf   "  ${C_Y}别忘了在云厂商安全组放行端口 %s 和 80${C_0}\n\n" "$PORT_NOW"
   else
     printf   "  ${C_Y}别忘了在云厂商安全组放行端口 %s${C_0}\n\n" "$PORT_NOW"
+    if [ "$NGINX_DONE" = "1" ]; then
+      printf   "  ${C_Y}nginx 配置已写入但未通过自检，免端口地址暂不可用。${C_0}\n"
+      printf   "  ${C_Y}可参考说明文档（README.md）的「配置 nginx 子路径访问」章节自行配置 nginx。${C_0}\n\n"
+    elif [ "$NGINX_SKIP" = "1" ]; then
+      printf   "  ${C_Y}本次未改动 nginx（您选择不停止正在运行的 nginx）。${C_0}\n"
+      printf   "  ${C_Y}如需免端口访问，可参考说明文档（README.md）的「配置 nginx 子路径访问」章节自行配置。${C_0}\n\n"
+    fi
   fi
 else
   info "稍后可用 bash $PROJECT_DIR/scripts/menu.sh 启动"

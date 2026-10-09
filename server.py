@@ -758,6 +758,10 @@ def share_create():
         hours = 24 * 7
     hours = max(0, min(hours, 24 * 365))   # 最多一年
     _purge_shares()
+    # 同一文件只保留一条分享记录：生成新链接前先作废该文件的旧链接，
+    # 避免用户多点几次分享就堆积出多条同文件链接。
+    for old in [k for k, v in SHARES.items() if v.get("path") == rel]:
+        SHARES.pop(old, None)
     token = secrets.token_urlsafe(10)
     exp = (time.time() + hours * 3600) if hours > 0 else 0
     SHARES[token] = {

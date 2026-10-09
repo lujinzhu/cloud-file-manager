@@ -11,8 +11,22 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- 登录界面 -->
-  <div id="login" class="login-screen">
+  <!-- 启动加载层：登录态确认前只显示它，避免已登录刷新时闪一下登录界面 -->
+  <div id="boot" class="boot-screen">
+    <div class="boot-logo">☁️</div>
+    <div class="boot-text">正在进入云盘…</div>
+  </div>
+  <script>
+    // 兜底：脚本本身加载失败时也不能一直卡在加载层
+    setTimeout(function () {
+      if (window.__cfmBooted) return;
+      var b = document.getElementById("boot"); if (b) b.classList.add("hidden");
+      var l = document.getElementById("login"); if (l) l.classList.remove("hidden");
+    }, 8000);
+  </script>
+
+  <!-- 登录界面（默认隐藏，由 boot() 判定后再显示） -->
+  <div id="login" class="login-screen hidden">
     <div class="login-bg"></div>
     <form id="login-form" class="login-card">
       <div class="login-logo">☁️</div>
