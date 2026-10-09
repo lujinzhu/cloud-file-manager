@@ -209,11 +209,16 @@ app.secret_key = SECRET_KEY
 def _static_no_cache(resp):
     """前端文件（含 PWA 的 sw.js）不做强缓存。
 
-    Flask 默认给静态文件发 12 小时缓存，升级后用户刷新会一直拿到旧页面。
-    这里改成每次校验（ETag → 304 成本极低），保证一升级就能生效。
+    Flask 默认给静态文件发 12 小时缓存，升级后用户刷新会一直拿到旧页面，
+    点「一键更新」后看起来就像没生效。这里改成每次校验（ETag → 304 成本极低），
+    保证一升级就能生效。
+
+    注意：本项目 static_url_path=""，前端文件实际落在 /app.js、/style.css 这类
+    根路径上（不是 /static/...），所以这里按「非 /api/ 即前端文件」来判断，
+    避免漏掉根路径资源。
     """
     p = request.path
-    if p == "/" or p.startswith("/static/") or p.endswith("/sw.js") or p.endswith("/manifest.json"):
+    if not p.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-cache, must-revalidate"
     return resp
 
