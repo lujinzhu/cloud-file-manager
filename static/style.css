@@ -284,6 +284,7 @@ body {
 /* ---------- 页脚版权 ---------- */
 .footer {
   flex: 0 0 auto;
+  position: relative;          /* 版本徽标（.ver-badge）以页脚定位 */
   padding: 11px 16px calc(11px + env(safe-area-inset-bottom));
   text-align: center; font-size: 12px; color: var(--ink-3);
   background: var(--panel); border-top: 1px solid var(--border);
@@ -603,18 +604,21 @@ body {
   box-shadow: inset 0 0 0 2px var(--primary);
 }
 
-/* ---------- 右下角：版本号 + 更新入口 ---------- */
+/* ---------- 右下角：更新入口 + 页脚版本号 ---------- */
 .ver-float {
-  position: fixed; right: 14px; bottom: 14px; z-index: 61;
+  position: fixed; right: 14px; bottom: 52px; z-index: 61;
   display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
   pointer-events: none;
 }
 .ver-float > * { pointer-events: auto; }
+/* 版本徽标并入页脚栏，相对页脚垂直居中（不受字体/缩放影响） */
 .ver-badge {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
   font-size: 11px; letter-spacing: .06em; color: var(--ink-3);
-  background: rgba(255, 255, 255, .84);
+  background: var(--panel);
   border: 1px solid var(--border); border-radius: 999px;
   padding: 3px 10px; box-shadow: var(--shadow-1);
+  white-space: nowrap;
 }
 .btn-update {
   border: none; cursor: pointer; font: inherit; font-weight: 700; font-size: 14px;
@@ -664,5 +668,9 @@ body {
   .tb-sep { display: none; }
   .tb-count { display: none; }
   .btn-update { font-size: 13px; padding: 9px 13px; }
-  .ver-badge { font-size: 10px; padding: 2px 8px; }
+  /* 窄屏：徽标改回文档流，跟版权文案一起换行居中，避免与文字重叠 */
+  .ver-badge {
+    position: static; transform: none;
+    font-size: 10px; padding: 2px 8px;
+  }
 }

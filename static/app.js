@@ -200,7 +200,12 @@
     closeSettings();
     closeSharesModal();
   }
-  function showApp() { hideBoot(); $("#login").classList.add("hidden"); $("#app").classList.remove("hidden"); }
+  function showApp() {
+    hideBoot();
+    $("#login").classList.add("hidden");
+    $("#app").classList.remove("hidden");
+    layoutVerFloat();   // 登录前 #app 隐藏、页脚高度为 0，显示后需重算更新按钮位置
+  }
 
   $("#login-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -704,16 +709,20 @@
   /* ---------------- 上传队列面板 ---------------- */
   function ensurePanel() { $("#upload-panel").classList.remove("hidden"); }
 
-  // 右下角的版本浮标：上传面板弹出时自动上移，避免被挡住
+  // 右下角的更新按钮：默认悬在页脚栏上方（版本徽标在页脚内居中），
+  // 上传面板弹出时自动上移，避免被挡住
   function layoutVerFloat() {
     const f = $("#ver-float"), p = $("#upload-panel");
     if (!f) return;
-    f.style.bottom = (p && !p.classList.contains("hidden")) ? (p.offsetHeight + 28) + "px" : "14px";
+    const ft = document.querySelector(".footer");
+    const base = (ft ? ft.offsetHeight : 40) + 12;
+    f.style.bottom = (p && !p.classList.contains("hidden")) ? (p.offsetHeight + 28) + "px" : base + "px";
   }
   if ($("#upload-panel") && window.MutationObserver) {
     new MutationObserver(layoutVerFloat).observe($("#upload-panel"), { attributes: true, attributeFilter: ["class"] });
   }
   layoutVerFloat();
+  window.addEventListener("resize", layoutVerFloat);
 
   function addUpItem(name, size) {
     ensurePanel();
