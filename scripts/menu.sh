@@ -27,13 +27,13 @@ show_menu() {
 
 pause() {
   printf "\n按回车键返回菜单…"
-  if [ -e /dev/tty ]; then read -r _ < /dev/tty || true; else read -r _ || true; fi
+  if [ -e /dev/tty ]; then read -r _ < /dev/tty 2>/dev/null || true; else read -r _ 2>/dev/null || true; fi
 }
 
 while true; do
   show_menu
   choice=""
-  if [ -e /dev/tty ]; then read -r choice < /dev/tty || exit 0; else read -r choice || exit 0; fi
+  if [ -e /dev/tty ]; then read -r choice < /dev/tty 2>/dev/null || exit 0; else read -r choice 2>/dev/null || exit 0; fi
   case "$choice" in
     1) bash "$MANAGE" start; pause ;;
     2) bash "$MANAGE" stop;  pause ;;
@@ -41,7 +41,16 @@ while true; do
     4) bash "$MANAGE" status; pause ;;
     5) bash "$MANAGE" password; pause ;;
     6) bash "$INSTALL"; pause ;;
-    7) bash "$UNINSTALL"; [ $? -ne 2 ] && pause ;;
+    7)
+      bash "$UNINSTALL"
+      rc=$?
+      # 0=成功 / 3=有残留失败：项目文件（含本脚本）已删除，必须退出菜单，
+      # 否则用户再选「启动服务」会因脚本不存在而报错。
+      if [ "$rc" = "0" ] || [ "$rc" = "3" ]; then
+        printf "\n${C_Y}项目已卸载，管理脚本被删除，菜单已退出。${C_0}\n"
+        exit 0
+      fi
+      pause ;;
     0|q|Q) printf "再见！\n"; exit 0 ;;
     *) printf "${C_R}无效选项，请输入 0-7${C_0}\n" ;;
   esac

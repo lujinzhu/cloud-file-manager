@@ -11,6 +11,11 @@
 #
 # 用法：
 #   bash scripts/uninstall.sh
+#
+# 退出码（供 menu.sh 判断）：
+#   0 = 卸载成功（脚本文件已被删除，菜单必须一并退出）
+#   2 = 用户取消，未删任何文件（可返回菜单）
+#   3 = 卸载完成但有条目删除失败（菜单同样退出）
 # ============================================================
 set -u
 
@@ -49,8 +54,16 @@ fi
 # ---------------- 2. 收集将删除的文件 ----------------
 declare -a DELETE_LIST=()   # 项目目录内的待删条目（排除数据目录本身）
 
-printf "\n${C_B}———— 将删除的文件 / 目录 ————${C_0}\n"
-line() { printf "  %-46s %s\n" "$1" "$2"; }
+printf "\n${C_B}———— 将删除的文件 / 目录（完整路径） ————${C_0}\n"
+# 统一打印：第 1 列完整路径（超长自动截断），第 2 列大小/说明
+line() {
+  local p="$1" note="$2"
+  if [ "${#p}" -gt 62 ]; then
+    printf "  %s…  %s\n" "${p:0:61}" "$note"
+  else
+    printf "  %-62s %s\n" "$p" "$note"
+  fi
+}
 
 # 2.1 systemd unit（仅当指向本项目时才删）
 if [ -f "$SYSTEMD_UNIT" ]; then
@@ -72,13 +85,16 @@ if [ -d "$PROJECT_DIR" ]; then
     real="$(cd "$(dirname "$p")" 2>/dev/null && pwd)/$(basename "$p")"
     [ "$real" = "$DATA_ROOT" ] && continue    # 数据目录单独处理
     size=$(du -sh "$p" 2>/dev/null | cut -f1)
-    line "${p#$PROJECT_DIR/}" "($size)"
+    [ -z "$size" ] && size="?"
+    line "$p" "(${size})"
     DELETE_LIST+=("$p")
   done
 fi
 
-printf "\n共 %d 个项目相关条目%s\n" "${#DELETE_LIST[@]}" \
-  $([ "$DELETE_UNIT" = "1" ] && printf " + systemd 服务配置")
+# 汇总计数（避免 printf 收到空参数报错“无效数字”）
+EXTRA_NOTE=""
+[ "$DELETE_UNIT" = "1" ] && EXTRA_NOTE=" + systemd 服务配置"
+printf "\n共 %d 个项目相关条目%s\n" "${#DELETE_LIST[@]}" "$EXTRA_NOTE"
 
 # ---------------- 3. 数据目录去留 ----------------
 printf "\n"
@@ -88,7 +104,7 @@ if [ -d "$DATA_ROOT" ]; then
   warn "里面是你上传的所有文件，默认【保留】，不会被删除。"
   printf "是否连数据一起删除？输入 %bdelete%b 删除，直接回车=保留: " "${C_R}" "${C_0}"
   ans=""
-  if [ -e /dev/tty ]; then read -r ans < /dev/tty || ans=""; else read -r ans || ans=""; fi
+  if [ -e /dev/tty ]; then read -r ans < /dev/tty 2>/dev/null || ans=""; else read -r ans 2>/dev/null || ans=""; fi
   if [ "$ans" = "delete" ]; then
     DELETE_DATA=1
     err "数据目录已列入删除清单：$DATA_ROOT"
@@ -105,7 +121,7 @@ fi
 printf "\n${C_R}⚠️  以上清单中的文件将被永久删除（不进回收站），此操作不可恢复！${C_0}\n"
 printf "确认卸载？输入 %byes%b 执行，其他任意内容取消: " "${C_R}" "${C_0}"
 ans=""
-if [ -e /dev/tty ]; then read -r ans < /dev/tty || ans=""; else read -r ans || ans=""; fi
+if [ -e /dev/tty ]; then read -r ans < /dev/tty 2>/dev/null || ans=""; else read -r ans 2>/dev/null || ans=""; fi
 if [ "$ans" != "yes" ]; then
   info "已取消，未删除任何文件。"
   exit 2
@@ -121,7 +137,7 @@ fi
 FAIL=0
 for p in "${DELETE_LIST[@]}"; do
   if rm -rf -- "$p" 2>/dev/null; then
-    ok "已删除 ${p#$PROJECT_DIR/}"
+    ok "已删除 $p"
   else
     err "删除失败：$p"; FAIL=1
   fi
@@ -138,6 +154,10 @@ fi
 
 if [ "$FAIL" = "0" ]; then
   printf "\n${C_G}卸载完成，私人云盘已从本机清理干净。${C_0}\n"
+  printf "${C_Y}管理脚本已随项目一并删除，若当前正从菜单运行，请直接退出，不要再选择其他菜单项。${C_0}\n"
+  exit 0
 else
   printf "\n${C_Y}卸载完成，但部分条目删除失败（多为权限不足），请用 sudo 重试。${C_0}\n"
+  printf "${C_Y}管理脚本已随项目一并删除，若当前正从菜单运行，请直接退出，不要再选择其他菜单项。${C_0}\n"
+  exit 3
 fi

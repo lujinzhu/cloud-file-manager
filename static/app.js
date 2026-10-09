@@ -239,10 +239,11 @@
   function renderQuotaBadge(q) {
     const el = $("#quota-badge");
     if (!q.quota) { el.textContent = `💾 已用 ${fmtSize(q.used)}`; el.classList.remove("warn"); return; }
+    const pct = Math.min(100, Math.round((q.used / q.quota) * 1000) / 10);
     const free = Math.max(0, q.quota - q.used);
-    el.textContent = `💾 剩余 ${fmtSize(free)} / ${fmtSize(q.quota)}`;
+    el.textContent = `💾 已用 ${fmtSize(q.used)} / ${fmtSize(q.quota)}  (${pct}%)`;
     el.classList.toggle("warn", q.used / q.quota >= 0.9);
-    el.title = `已用 ${fmtSize(q.used)}，总容量 ${fmtSize(q.quota)}（磁盘总容量 ${fmtSize(q.diskTotal)}）`;
+    el.title = `已用 ${fmtSize(q.used)}，总容量 ${fmtSize(q.quota)}，剩余 ${fmtSize(free)}（磁盘总容量 ${fmtSize(q.diskTotal)}）`;
   }
 
   /* ---------------- 文件分享（免登录下载链接） ---------------- */
