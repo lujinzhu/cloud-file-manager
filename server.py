@@ -89,6 +89,30 @@ INITIAL_HASH = os.environ.get("CFM_INITIAL_PASSWORD_HASH", "").lower()
 INITIAL_SALT = os.environ.get("CFM_INITIAL_PASSWORD_SALT", "")
 ENV_PATH = os.path.join(BASE_DIR, ".env")                          # 配置写回目标
 
+
+def _read_version():
+    """版本号：读项目根目录的 VERSION 文件（更新脚本会整体替换它），缺失时回退 0.0.0。"""
+    try:
+        with open(os.path.join(BASE_DIR, "VERSION"), "r", encoding="utf-8") as f:
+            v = f.read().strip().splitlines()[0].strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+APP_VERSION = _read_version()
+REPO = os.environ.get("CFM_REPO", "lujinzhu/cloud-file-manager")   # 更新源仓库
+REPO_BRANCH = os.environ.get("CFM_BRANCH", "main")
+UPDATE_TTL = float(os.environ.get("CFM_UPDATE_TTL", "600"))        # 版本检查结果缓存时长（秒）
+# 更新源：主站失败时依次尝试镜像（国内服务器常拉不到 raw.githubusercontent.com）
+REMOTE_BASES = [
+    "https://raw.githubusercontent.com/{repo}/{branch}/",
+    "https://ghfast.top/https://raw.githubusercontent.com/{repo}/{branch}/",
+    "https://raw.fastgit.org/{repo}/{branch}/",
+]
+
 # 标准库 mimetypes 缺失的常见类型，主动补充，保证预览时浏览器能正确渲染
 _EXTRA_MIMES = {
     ".apk": "application/vnd.android.package-archive",
@@ -179,6 +203,19 @@ def update_env_file(updates):
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 app.secret_key = SECRET_KEY
+
+
+@app.after_request
+def _static_no_cache(resp):
+    """前端文件（含 PWA 的 sw.js）不做强缓存。
+
+    Flask 默认给静态文件发 12 小时缓存，升级后用户刷新会一直拿到旧页面。
+    这里改成每次校验（ETag → 304 成本极低），保证一升级就能生效。
+    """
+    p = request.path
+    if p == "/" or p.startswith("/static/") or p.endswith("/sw.js") or p.endswith("/manifest.json"):
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
 
 ROOT = Path(ROOT_DIR).resolve()
 ROOT.mkdir(parents=True, exist_ok=True)
@@ -831,6 +868,101 @@ def mkdir():
     return jsonify(ok=True)
 
 
+def _rel_of(p):
+    """绝对路径 → 相对 ROOT 的路径（用 / 分隔）。"""
+    try:
+        r = str(Path(p).resolve().relative_to(ROOT)).replace("\\", "/")
+    except Exception:
+        return ""
+    return "" if r == "." else r
+
+
+def remap_share_path(old_rel, new_rel):
+    """文件被重命名/移动后同步分享记录里的路径，避免已发出的链接失效。
+
+    old_rel/new_rel 均为相对 ROOT 的路径；文件夹移动时其下所有分享一并跟随。
+    """
+    old_rel = (old_rel or "").strip("/")
+    new_rel = (new_rel or "").strip("/")
+    if not old_rel or old_rel == new_rel:
+        return
+    changed = False
+    for rec in SHARES.values():
+        p = (rec.get("path") or "").strip("/")
+        if p == old_rel:
+            rec["path"] = new_rel
+            rec["name"] = os.path.basename(new_rel) or rec.get("name", "")
+            changed = True
+        elif p.startswith(old_rel + "/"):
+            rec["path"] = new_rel + p[len(old_rel):]
+            changed = True
+    if changed:
+        _save_shares()
+
+
+@app.route("/api/rename", methods=["POST"])
+@login_required
+def rename():
+    """重命名文件或文件夹。body: {path, name}"""
+    data = request.get_json(silent=True) or {}
+    src = safe_path(data.get("path", ""))
+    if not src.exists():
+        return jsonify(ok=False, error="文件或文件夹不存在"), 404
+    name = clean_name(data.get("name", "")).strip()
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        return jsonify(ok=False, error="名称不能为空，也不能包含 / 或 \\"), 400
+    if name.startswith("."):
+        return jsonify(ok=False, error="名称不能以 . 开头（隐藏文件不显示）"), 400
+    if name == src.name:
+        return jsonify(ok=True, name=name, path=_rel_of(src), unchanged=True)
+    dst = src.parent / name
+    if dst.exists():
+        return jsonify(ok=False, error="已存在同名文件或文件夹"), 409
+    try:
+        src.rename(dst)
+    except OSError as e:
+        return jsonify(ok=False, error=f"重命名失败：{e.strerror or e}"), 500
+    remap_share_path(data.get("path", ""), _rel_of(dst))
+    invalidate_used()
+    return jsonify(ok=True, name=name, path=_rel_of(dst))
+
+
+@app.route("/api/move", methods=["POST"])
+@login_required
+def move():
+    """把文件/文件夹移动到目标文件夹。body: {paths: [...], target: "目标文件夹相对路径"}"""
+    data = request.get_json(silent=True) or {}
+    paths = data.get("paths") or []
+    if isinstance(paths, str):
+        paths = [paths]
+    dst_dir = safe_path(data.get("target", ""))
+    if not dst_dir.is_dir():
+        return jsonify(ok=False, error="目标文件夹不存在"), 400
+    moved, errors = [], []
+    for rel in paths:
+        src = safe_path(rel)
+        if not src.exists():
+            errors.append(f"{src.name}：不存在")
+            continue
+        if src.parent == dst_dir:          # 原地，跳过
+            continue
+        # 禁止把文件夹移动到自身或其子目录下
+        if src.is_dir() and (dst_dir == src or src in dst_dir.parents):
+            errors.append(f"{src.name}：不能移动到它自己里面")
+            continue
+        name = unique_name(dst_dir, src.name)   # 目标已有同名则自动改名，不覆盖
+        dst = dst_dir / name
+        try:
+            shutil.move(str(src), str(dst))
+        except (OSError, shutil.Error) as e:
+            errors.append(f"{src.name}：{e}")
+            continue
+        remap_share_path(rel, _rel_of(dst))
+        moved.append({"from": rel, "to": _rel_of(dst), "name": name})
+    invalidate_used()
+    return jsonify(ok=not errors, moved=moved, errors=errors)
+
+
 @app.route("/api/delete", methods=["POST"])
 @login_required
 def delete():
@@ -846,8 +978,149 @@ def delete():
     return jsonify(ok=True)
 
 
+# ----------------------------- 版本检查 / 一键更新 -----------------------------
+# 远端检测走后台线程：接口本身立即返回（页面上版本号秒出），检测结果下次请求时可见
+import threading
+
+_UPDATE_CACHE = {"ts": 0.0, "latest": "", "changelog": "", "error": "", "checking": False, "done": False}
+
+
+def _http_text(url, timeout=6):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "cloud-file-manager"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        # 环境里的 http_proxy 不一定可用（常见于装了代理工具的机器），再直连试一次
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+
+
+def _remote_fetch(filename):
+    """从 GitHub 取一个文本文件，主站不通时自动换镜像。"""
+    last = "无可用源"
+    for tpl in REMOTE_BASES:
+        try:
+            return _http_text(tpl.format(repo=REPO, branch=REPO_BRANCH) + filename)
+        except Exception as e:
+            last = str(e)
+    raise RuntimeError(last)
+
+
+def parse_version(v):
+    """'v1.7.0' → (1, 7, 0)，用于比较大小。"""
+    nums = re.findall(r"\d+", str(v or ""))
+    return tuple(int(x) for x in nums[:4]) or (0,)
+
+
+def extract_changelog(text, version):
+    """从 CHANGELOG.md 中截出指定版本的变更条目（含在 ## vX.Y.Z 标题下）。"""
+    if not text:
+        return ""
+    want = str(version).lstrip("vV")
+    out, collecting = [], False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("## "):
+            if collecting:
+                break
+            title = s[3:].strip().lstrip("vV")
+            if title == want or title.startswith(want):
+                collecting = True
+            continue
+        if collecting:
+            out.append(line.rstrip())
+    while out and not out[0].strip():
+        out.pop(0)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out)
+
+
+def _remote_check_worker():
+    """后台拉取远端版本号与变更说明（可能耗时十几秒，不能阻塞请求）。"""
+    _UPDATE_CACHE["checking"] = True
+    latest, changelog, err = "", "", ""
+    try:
+        latest = _remote_fetch("VERSION").strip().splitlines()[0].strip()
+    except Exception as e:
+        err = f"无法连接更新服务器：{e}"
+    if latest:
+        try:
+            changelog = extract_changelog(_remote_fetch("CHANGELOG.md"), latest)
+        except Exception:
+            changelog = ""
+    _UPDATE_CACHE.update({
+        "ts": time.time(), "latest": latest, "changelog": changelog,
+        "error": err, "checking": False, "done": True,
+    })
+
+
+def check_update(force=False):
+    """返回缓存的检测结果；缓存过期（或 force）时在后台重新检测。"""
+    now = time.time()
+    stale = (not _UPDATE_CACHE["done"]) or (now - _UPDATE_CACHE["ts"] > UPDATE_TTL)
+    if (force or stale) and not _UPDATE_CACHE["checking"]:
+        threading.Thread(target=_remote_check_worker, daemon=True).start()
+    return _UPDATE_CACHE
+
+
+@app.route("/api/ping")
+def ping():
+    """无需登录的探活接口，返回当前版本号（网页端更新后轮询它判断服务是否已重启）。"""
+    return jsonify(ok=True, version=APP_VERSION, time=int(time.time()))
+
+
+@app.route("/api/version")
+@login_required
+def version_info():
+    """当前版本 + 远端最新版本与变更说明。?force=1 强制重新检测（忽略缓存）。"""
+    info = check_update(force=request.args.get("force") == "1")
+    latest = info.get("latest") or ""
+    return jsonify(
+        ok=True,
+        current=APP_VERSION,
+        latest=latest,
+        hasUpdate=bool(latest) and parse_version(latest) > parse_version(APP_VERSION),
+        changelog=info.get("changelog", ""),
+        error=info.get("error", ""),
+        checking=bool(info.get("checking")),
+        checked=int(info.get("ts", 0) * 1000),
+        repo=f"https://github.com/{REPO}",
+    )
+
+
+@app.route("/api/update", methods=["POST"])
+@login_required
+def do_update():
+    """后台执行更新脚本（会重启服务），日志写入 logs/update.log。"""
+    import subprocess
+    script = os.path.join(BASE_DIR, "scripts", "update.sh")
+    if not os.path.isfile(script):
+        return jsonify(ok=False, error="未找到 scripts/update.sh，请到项目目录手动更新"), 400
+    log_dir = os.path.join(BASE_DIR, "logs")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except Exception:
+        pass
+    log = os.path.join(log_dir, "update.log")
+    try:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 网页端触发更新 =====\n")
+        lf = open(log, "ab")
+        subprocess.Popen(
+            ["bash", script, "--yes"], cwd=BASE_DIR, stdin=subprocess.DEVNULL,
+            stdout=lf, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+    except Exception as e:
+        return jsonify(ok=False, error=f"启动更新失败：{e}"), 500
+    return jsonify(ok=True, log="logs/update.log")
+
+
 if __name__ == "__main__":
-    print(f"私人云盘已启动： http://{HOST}:{PORT}")
+    print(f"私人云盘已启动： http://{HOST}:{PORT}  （版本 {APP_VERSION}）")
     print(f"管理目录： {ROOT}")
     print(f"续传分片： {CHUNK_SIZE // 1024} KB")
     print("请在浏览器打开上面的地址，使用密码登录。")

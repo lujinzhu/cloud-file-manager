@@ -20,6 +20,8 @@
     mode: "browse",    // browse | search（搜索结果模式）
     searchTimer: null,
     quota: null,       // /api/quota 结果（used/quota/diskTotal/diskFree）
+    ver: {},           // /api/version 结果（current/latest/hasUpdate/changelog）
+    dragRels: [],      // 正在拖动的文件相对路径（多选时整批移动）
   };
 
   /* ---------------- 排序 ---------------- */
@@ -178,6 +180,7 @@
       if (j.authenticated) {
         showApp();
         loadQuota();
+        loadVersion();
         await loadList("");
         if (j.mustChange) openForceModal();   // 首次登录强制改密
       } else showLogin();
@@ -215,6 +218,7 @@
         const j = await res.json();
         showApp();
         loadQuota();
+        loadVersion();
         await loadList("");
         if (j.mustChange) openForceModal();   // 初始密码未修改 → 强制弹窗
       } else {
@@ -530,6 +534,7 @@
     const home = document.createElement("span");
     home.className = "crumb home"; home.textContent = "🏠 根目录";
     home.onclick = () => loadList("");
+    bindCrumbDrop(home, "");
     bc.appendChild(home);
 
     if (rel) {
@@ -542,10 +547,32 @@
         const c = document.createElement("span");
         acc = acc ? acc + "/" + p : p;
         if (i === parts.length - 1) { c.className = "crumb current"; c.textContent = p; }
-        else { c.className = "crumb"; c.textContent = p; c.onclick = () => loadList(acc); }
+        else {
+          c.className = "crumb"; c.textContent = p; c.onclick = () => loadList(acc);
+          bindCrumbDrop(c, acc);   // 拖到面包屑上 = 移动到那一层目录
+        }
         bc.appendChild(c);
       });
     }
+  }
+
+  // 面包屑也可作为拖放目标（拖到哪一层的名字上，就移动到那一层）
+  function bindCrumbDrop(el, target) {
+    el.addEventListener("dragover", (e) => {
+      if (!state.dragRels.length) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      el.classList.add("crumb-drop");
+    });
+    el.addEventListener("dragleave", () => el.classList.remove("crumb-drop"));
+    el.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      el.classList.remove("crumb-drop");
+      const rels = state.dragRels.slice();
+      state.dragRels = [];
+      if (!rels.length) return;
+      await moveTo(target, rels);
+    });
   }
 
   function renderList() {
@@ -598,8 +625,49 @@
       };
       row.appendChild(meta);
 
+      // 拖动：把文件/文件夹拖到文件夹行上松手即可移动（多选时整批移动）
+      row.draggable = true;
+      row.addEventListener("dragstart", (e) => {
+        const rels = (state.selected.has(rel) && state.selected.size > 1) ? [...state.selected] : [rel];
+        state.dragRels = rels;
+        e.dataTransfer.effectAllowed = "move";
+        try { e.dataTransfer.setData("text/plain", rels.join("\n")); } catch (_) {}
+        row.classList.add("dragging");
+      });
+      row.addEventListener("dragend", () => {
+        row.classList.remove("dragging");
+        state.dragRels = [];
+        clearDropHover();
+      });
+      if (it.type === "dir") {
+        row.addEventListener("dragover", (e) => {
+          if (!state.dragRels.length || state.dragRels.includes(rel)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          row.classList.add("drop-hover");
+        });
+        row.addEventListener("dragleave", () => row.classList.remove("drop-hover"));
+        row.addEventListener("drop", async (e) => {
+          e.preventDefault();
+          row.classList.remove("drop-hover");
+          let rels = state.dragRels.slice();
+          if (!rels.length) {
+            rels = (e.dataTransfer.getData("text/plain") || "").split("\n").filter(Boolean);
+          }
+          state.dragRels = [];
+          if (!rels.length || rels.includes(rel)) return;
+          await moveTo(rel, rels);
+        });
+      }
+
       const acts = document.createElement("div");
       acts.className = "acts";
+
+      const rn = document.createElement("button");
+      rn.className = "icon-btn"; rn.textContent = "✏️"; rn.title = "重命名";
+      rn.onclick = () => openRenameModal(rel, it.name, it.type);
+      acts.appendChild(rn);
+
       if (it.type === "file") {
         const sh = document.createElement("button");
         sh.className = "icon-btn"; sh.textContent = "🔗"; sh.title = "生成分享链接（免登录下载）";
@@ -635,6 +703,17 @@
 
   /* ---------------- 上传队列面板 ---------------- */
   function ensurePanel() { $("#upload-panel").classList.remove("hidden"); }
+
+  // 右下角的版本浮标：上传面板弹出时自动上移，避免被挡住
+  function layoutVerFloat() {
+    const f = $("#ver-float"), p = $("#upload-panel");
+    if (!f) return;
+    f.style.bottom = (p && !p.classList.contains("hidden")) ? (p.offsetHeight + 28) + "px" : "14px";
+  }
+  if ($("#upload-panel") && window.MutationObserver) {
+    new MutationObserver(layoutVerFloat).observe($("#upload-panel"), { attributes: true, attributeFilter: ["class"] });
+  }
+  layoutVerFloat();
 
   function addUpItem(name, size) {
     ensurePanel();
@@ -884,6 +963,9 @@
     if (!$("#share-modal").classList.contains("hidden")) closeShareModal();
     if (!$("#shares-modal").classList.contains("hidden")) closeSharesModal();
     if (!$("#settings-modal").classList.contains("hidden")) closeSettings();
+    if (!$("#rename-modal").classList.contains("hidden")) closeRenameModal();
+    // 更新进行中不允许 Esc 关闭（避免用户以为失败而重复触发）
+    if (!$("#update-modal").classList.contains("hidden") && !$("#up-go").disabled) closeUpdateModal();
   });
 
   function previewFile(rel, name, size) {
@@ -1045,6 +1127,181 @@
       body: JSON.stringify({ path: state.currentPath, name }) });
     if (r.ok) { toast("已创建"); loadList(state.currentPath); }
     else { const j = await r.json().catch(() => ({})); toast(j.error || "创建失败"); }
+  });
+
+  /* ---------------- 移动（拖动到文件夹 / 面包屑） ---------------- */
+  function clearDropHover() {
+    document.querySelectorAll(".row.drop-hover").forEach((el) => el.classList.remove("drop-hover"));
+    document.querySelectorAll(".crumb-drop").forEach((el) => el.classList.remove("crumb-drop"));
+  }
+  function targetName(t) { return t ? String(t).split("/").pop() : "根目录"; }
+
+  async function moveTo(target, rels) {
+    const r = await fetch("api/move", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths: rels, target }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(j.error || "移动失败"); return; }
+    const n = (j.moved || []).length;
+    const errs = j.errors || [];
+    if (errs.length) toast(`已移动 ${n} 项，${errs.length} 项失败：${errs[0]}`);
+    else if (n) toast(`已移动 ${n} 项到「${targetName(target)}」`);
+    else toast("已经在目标位置了");
+    state.selected.clear(); updateSelButtons();
+    loadList(state.currentPath);
+    loadQuota();
+  }
+
+  /* ---------------- 重命名 ---------------- */
+  let renameState = { rel: "", name: "", type: "file" };
+
+  function openRenameModal(rel, name, type) {
+    renameState = { rel, name, type: type || "file" };
+    $("#rn-kind").textContent = (type === "dir" ? "📁 " : "📄 ") + name;
+    $("#rn-name").value = name;
+    $("#rn-msg").textContent = ""; $("#rn-msg").className = "st-msg";
+    $("#rename-modal").classList.remove("hidden");
+    setTimeout(() => { const i = $("#rn-name"); i.focus(); i.select(); }, 120);
+  }
+  function closeRenameModal() { $("#rename-modal").classList.add("hidden"); }
+
+  $("#rn-close").addEventListener("click", closeRenameModal);
+  $("#rn-cancel").addEventListener("click", closeRenameModal);
+  $("#rename-modal").addEventListener("click", (e) => { if (e.target.id === "rename-modal") closeRenameModal(); });
+  $("#rn-ok").addEventListener("click", submitRename);
+  $("#rn-name").addEventListener("keydown", (e) => { if (e.key === "Enter") submitRename(); });
+
+  async function submitRename() {
+    const name = $("#rn-name").value.trim();
+    const msg = $("#rn-msg");
+    if (!name) { msg.textContent = "名称不能为空"; msg.className = "st-msg err"; return; }
+    if (name === renameState.name) { closeRenameModal(); return; }
+    const r = await fetch("api/rename", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: renameState.rel, name }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.textContent = j.error || "重命名失败"; msg.className = "st-msg err"; return; }
+    closeRenameModal();
+    toast("已重命名");
+    loadList(state.currentPath);
+  }
+
+  /* ---------------- 版本显示 & 一键更新 ---------------- */
+  async function loadVersion(force, retry) {
+    // 1) 先取本地版本（/api/ping 不访问外网，版本号秒出）
+    try {
+      const p = await fetch("api/ping?" + Date.now());
+      if (p.ok) {
+        const pj = await p.json();
+        if (pj.version) { state.ver = Object.assign({}, state.ver, { current: pj.version }); renderVersion(); }
+      }
+    } catch (_) {}
+    // 2) 再查远端最新版本（服务端后台检测，可能要等一会儿）
+    try {
+      const r = await fetch("api/version" + (force ? "?force=1" : ""));
+      if (!r.ok) return;
+      const j = await r.json();
+      state.ver = Object.assign({}, state.ver, j);
+      renderVersion();
+      // 服务端还在检测中：过几秒再取一次结果（最多 6 次）
+      if (j.checking && !j.latest && !j.error && (retry || 0) < 6) {
+        setTimeout(() => loadVersion(false, (retry || 0) + 1), 5000);
+      }
+    } catch (_) {}
+  }
+
+  function renderVersion() {
+    const v = state.ver || {};
+    const badge = $("#ver-badge");
+    if (badge) {
+      badge.textContent = "v" + (v.current || "—");
+      badge.title = v.hasUpdate ? `当前 v${v.current}，最新 v${v.latest}` : `当前项目版本 v${v.current}`;
+    }
+    const btn = $("#btn-update");
+    if (btn) {
+      if (v.hasUpdate) { btn.classList.remove("hidden"); btn.textContent = `🆕 更新到 v${v.latest}`; }
+      else btn.classList.add("hidden");
+    }
+  }
+
+  function openUpdateModal() {
+    const v = state.ver || {};
+    $("#up-cur").textContent = "v" + (v.current || "—");
+    $("#up-new").textContent = "v" + (v.latest || "—");
+    const box = $("#up-changes");
+    const txt = (v.changelog || "").trim();
+    box.innerHTML = "";
+    if (!txt) {
+      box.innerHTML = '<div class="st-hint">暂未获取到该版本的详细变更说明，可直接更新。</div>';
+    } else {
+      txt.split("\n").forEach((ln) => {
+        const s = ln.trim();
+        if (!s) return;
+        const div = document.createElement("div");
+        const isItem = /^[-*•]\s?/.test(s);
+        div.className = "up-line " + (isItem ? "up-item" : "up-head");
+        div.textContent = s.replace(/^[-*•]\s?/, "");
+        box.appendChild(div);
+      });
+    }
+    $("#up-msg").textContent = ""; $("#up-msg").className = "st-msg";
+    $("#up-go").disabled = false; $("#up-go").textContent = "立即更新";
+    $("#up-cancel").textContent = "以后再说";
+    $("#update-modal").classList.remove("hidden");
+  }
+  function closeUpdateModal() { $("#update-modal").classList.add("hidden"); }
+
+  $("#btn-update").addEventListener("click", openUpdateModal);
+  $("#up-close").addEventListener("click", closeUpdateModal);
+  $("#up-cancel").addEventListener("click", closeUpdateModal);
+  $("#update-modal").addEventListener("click", (e) => {
+    if (e.target.id === "update-modal" && !$("#up-go").disabled) closeUpdateModal();
+  });
+
+  $("#up-go").addEventListener("click", async () => {
+    const go = $("#up-go"), msg = $("#up-msg");
+    const from = (state.ver || {}).current;
+    go.disabled = true; go.textContent = "正在更新…";
+    $("#up-cancel").textContent = "后台进行中";
+    msg.textContent = "正在下载并更新，完成后服务会自动重启，请稍候…";
+    msg.className = "st-msg";
+    try {
+      const r = await fetch("api/update", { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        go.disabled = false; go.textContent = "重试更新";
+        $("#up-cancel").textContent = "以后再说";
+        msg.textContent = j.error || "更新启动失败"; msg.className = "st-msg err";
+        return;
+      }
+    } catch (e) {
+      go.disabled = false; go.textContent = "重试更新";
+      msg.textContent = "网络错误：" + e.message; msg.className = "st-msg err";
+      return;
+    }
+    // 轮询等待服务重启（/api/ping 无需登录，重启后也能拿到版本号）
+    let done = false;
+    for (let i = 0; i < 40; i++) {
+      await sleep(3000);
+      try {
+        const r = await fetch("api/ping?" + Date.now());
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (j.version && j.version !== from) { done = true; break; }
+      } catch (_) { /* 服务重启中，继续等 */ }
+    }
+    if (done) {
+      msg.textContent = "更新完成！正在刷新页面（需重新登录一次）…";
+      msg.className = "st-msg ok";
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      go.disabled = false; go.textContent = "重试更新";
+      $("#up-cancel").textContent = "以后再说";
+      msg.textContent = "未能确认更新结果，请稍后刷新页面看版本号，或在服务器执行：bash scripts/update.sh";
+      msg.className = "st-msg err";
+    }
   });
 
   /* ---------------- 删除选中 ---------------- */

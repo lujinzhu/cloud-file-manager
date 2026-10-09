@@ -1,6 +1,6 @@
 /* 私人云盘 - Service Worker（PWA 离线壳）
    使用相对路径，兼容任意子路径部署（如 /yunpan/） */
-const CACHE = "cfm-v6";
+const CACHE = "cfm-v7";
 const ASSETS = [
   "./", "style.css", "app.js", "manifest.json",
   "icon.svg", "icon-192.png", "icon-512.png",

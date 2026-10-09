@@ -217,6 +217,52 @@
       </div>
     </div>
 
+    <!-- 文件重命名 -->
+    <div id="rename-modal" class="modal-mask hidden">
+      <div class="modal-card" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span class="modal-title">✏️ 重命名</span>
+          <button id="rn-close" class="pv-x" title="关闭 (Esc)">✕</button>
+        </div>
+        <section class="st-section">
+          <div id="rn-kind" class="sh-name">—</div>
+          <input id="rn-name" spellcheck="false" placeholder="输入新名称" />
+          <div class="st-row">
+            <button id="rn-cancel" class="btn">取消</button>
+            <button id="rn-ok" class="btn primary">确定</button>
+          </div>
+          <div id="rn-msg" class="st-msg"></div>
+          <div class="st-hint">重命名后，该文件已有的分享链接会自动跟随，不会失效。</div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 新版本更新 -->
+    <div id="update-modal" class="modal-mask hidden">
+      <div class="modal-card wide" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span class="modal-title">🆕 发现新版本</span>
+          <button id="up-close" class="pv-x" title="关闭 (Esc)">✕</button>
+        </div>
+        <section class="st-section">
+          <div class="up-ver">当前 <b id="up-cur">—</b> ⟶ 最新 <b id="up-new">—</b></div>
+          <div id="up-changes" class="up-changes">加载中…</div>
+          <div id="up-msg" class="st-msg"></div>
+          <div class="st-row">
+            <button id="up-cancel" class="btn">以后再说</button>
+            <button id="up-go" class="btn primary">立即更新</button>
+          </div>
+          <div class="st-hint">更新只覆盖程序文件，<b>登录密码、分享记录与云盘里的文件都不会动</b>；更新完成后服务会自动重启，需重新登录一次。</div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 右下角：版本 + 更新入口 -->
+    <div id="ver-float" class="ver-float">
+      <button id="btn-update" class="btn-update hidden" title="有新版本，点击查看更新内容">🆕 有新版本</button>
+      <span id="ver-badge" class="ver-badge" title="当前项目版本">v—</span>
+    </div>
+
     <div id="toast" class="toast"></div>
   </div>
 

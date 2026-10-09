@@ -80,8 +80,9 @@ bash scripts/menu.sh
 ```
 1) 启动服务        5) 重置登录密码
 2) 停止服务        6) 重新运行初始化向导
-3) 重启服务        7) 卸载私人云盘（清理项目文件）
-4) 查看运行状态    0) 退出
+3) 重启服务        7) 检查更新 / 更新到最新版
+4) 查看运行状态    8) 卸载私人云盘（清理项目文件）
+                   0) 退出
 ```
 
 也可以直接用子命令：
@@ -89,6 +90,8 @@ bash scripts/menu.sh
 ```bash
 bash scripts/manage.sh start | stop | restart | status
 bash scripts/manage.sh password            # 交互式重置密码（或 -p 新密码）
+bash scripts/update.sh                     # 检查更新并询问是否更新
+bash scripts/update.sh --check             # 只检查版本，不更新
 ```
 
 > **关于执行方式与「权限不够」**
@@ -107,6 +110,39 @@ bash scripts/manage.sh password            # 交互式重置密码（或 -p 新�
 > ```bash
 > sed -i 's/\r$//' scripts/*.sh
 > ```
+
+## 更新到最新版本
+
+三种方式，任选其一（版本号来自项目根目录的 `VERSION` 文件）：
+
+### 1. 网页端一键更新（推荐）
+
+主界面**右下角会显示当前版本号**；检测到 GitHub 上有新版本时，右下角出现醒目的
+「🆕 更新到 vX.Y.Z」按钮，点击后弹窗展示该版本的**功能变更列表**，点「立即更新」即可：
+
+- 服务端后台执行 `scripts/update.sh`，页面轮询等待重启
+- 更新完成后自动刷新页面（服务重启后需重新登录一次）
+
+### 2. 脚本菜单
+
+```bash
+bash scripts/menu.sh        # 选 7「检查更新 / 更新到最新版」
+```
+
+### 3. 命令行
+
+```bash
+bash scripts/update.sh            # 检查并询问是否更新
+bash scripts/update.sh --check    # 只看版本，不更新
+bash scripts/update.sh --yes      # 有新版本直接更新（网页端用的就是这个）
+```
+
+**更新时会保留**：`.env`（密码与配置）、`.shares.json`（分享记录）、`logs/`，以及云盘里的数据文件。
+只会覆盖程序文件（`server.py`、`static/`、`scripts/`、`VERSION`、`CHANGELOG.md` 等），
+覆盖前会在 `/tmp` 留一份备份，语法检查失败会自动回滚。更新完成后自动重启服务。
+
+> 服务器需要能访问 GitHub；拉不到时会自动切换镜像（ghfast.top / raw.fastgit.org）。
+> 更新源可用环境变量 `CFM_REPO` / `CFM_BRANCH` 改（比如换成你自己的 fork）。
 
 ## 一键卸载
 
@@ -144,6 +180,9 @@ bash scripts/uninstall.sh
 | `CFM_UPLOAD_TTL`            | 未完成上传会话保留时长（秒）                                            | `86400`（24 小时）                            |
 | `CFM_PBKDF2_ITERATIONS`     | PBKDF2 迭代次数                                               | `60000`                                   |
 | `CFM_SEARCH_LIMIT`          | 搜索结果上限                                                    | `300`                                     |
+| `CFM_REPO`                  | 更新源仓库（owner/repo）                                        | `lujinzhu/cloud-file-manager`             |
+| `CFM_BRANCH`                | 更新源分支                                                      | `main`                                    |
+| `CFM_UPDATE_TTL`            | 远端版本检测结果的缓存时长（秒）                                        | `600`                                     |
 
 > `.env` 含会话密钥与哈希，已被 `.gitignore` 排除，**不要提交到仓库**。
 
@@ -314,6 +353,8 @@ pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | GET        | `/api/search?q=`                     | 递归模糊搜索（大小写不敏感）                             |
 | POST       | `/api/upload?path=`                  | 上传（multipart，支持多文件）                        |
 | GET / HEAD | `/api/download?path=`                | 下载；`&inline=1` 内嵌预览（自动 MIME）               |
+| POST       | `/api/rename`                        | 重命名（`{path, name}`；同名返回 409，不会覆盖）              |
+| POST       | `/api/move`                          | 移动（`{paths: [...], target}`；目标同名自动改名，禁止移到自身内） |
 | POST       | `/api/mkdir`                         | 新建文件夹                                      |
 | POST       | `/api/delete`                        | 删除（递归）                                     |
 | POST       | `/api/upload_status`                 | 续传状态（uploadId / received[] / 同名时返回改名后的 finalName） |
@@ -324,6 +365,9 @@ pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | POST       | `/api/share`                         | 生成分享链接（`{path, expire}`；expire 单位为小时，0=永久） |
 | DELETE     | `/api/share`                         | 取消分享（`{token}`），链接立即失效                     |
 | GET        | `/s/<token>`                         | **公开下载**：免登录，任何人打开即下载（过期/失效返回中文说明页）        |
+| GET        | `/api/ping`                          | 探活 + 返回当前版本号（**无需登录**，网页端更新后轮询它判断服务是否重启）  |
+| GET        | `/api/version`                       | 当前版本 / 最新版本 / 变更说明（`?force=1` 强制重新检测）        |
+| POST       | `/api/update`                        | 后台执行 `scripts/update.sh` 更新到最新版并重启服务           |
 
 除 `/api/login`、`/api/me`、`/s/<token>` 外均需登录（401）；非法路径返回 400。  
 分享记录保存在项目目录的 `.shares.json`（不写入共享文件夹，不会污染文件列表）。
@@ -336,7 +380,18 @@ pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ## 版本说明
 
-### v1.6.1（当前）
+### v1.7.0（当前）
+
+- **文件 / 文件夹支持重命名**：文件行新增 ✏️ 按钮，弹窗输入新名称；目标已存在同名会提示，绝不覆盖
+- **拖动文件到文件夹即可移动**：按住任意文件行拖到文件夹行（或顶部面包屑的某一层）上松手；多选后可整批拖动；目标已有同名文件会自动改名
+- 重命名 / 移动后，**已生成的分享链接会自动跟随**，不会失效
+- **脚本菜单新增「检查更新 / 更新到最新版」（选项 7）**：比较本地 `VERSION` 与 GitHub 上的版本，不一致时可直接更新（保留 `.env`、分享记录、云盘数据，失败自动回滚，完成后重启服务）
+- **主界面右下角显示当前版本号**（`v1.7.0`）
+- **有新版本时右下角出现醒目的「🆕 更新到 vX.Y.Z」按钮**：点击弹出该版本的功能变更说明，确认后一键更新并自动重启
+- 修复：静态文件不再被浏览器强缓存（Flask 默认 12 小时），升级后刷新即可生效
+- Service Worker 缓存版本 cfm-v7
+
+### v1.6.1
 
 - **同一文件重复分享只保留一条链接**：生成新分享前，服务端自动作废该文件的旧分享记录（之前多点几次会堆积多条同文件链接）
 - **云盘为空时已用容量如实显示 `0 B`**：修复空盘时顶栏显示「已用 —」的问题（0 B / 空文件同样如实显示）

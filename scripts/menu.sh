@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANAGE="$SCRIPT_DIR/manage.sh"
 INSTALL="$SCRIPT_DIR/install.sh"
 UNINSTALL="$SCRIPT_DIR/uninstall.sh"
+UPDATE="$SCRIPT_DIR/update.sh"
 
 C_G="\033[32m"; C_Y="\033[33m"; C_B="\033[36m"; C_R="\033[31m"; C_0="\033[0m"
 
@@ -20,7 +21,8 @@ show_menu() {
   printf   "  ${C_B}4${C_0}) 查看运行状态\n"
   printf   "  ${C_B}5${C_0}) 重置登录密码\n"
   printf   "  ${C_B}6${C_0}) 重新运行初始化向导\n"
-  printf   "  ${C_B}7${C_0}) 卸载私人云盘（清理项目文件）\n"
+  printf   "  ${C_B}7${C_0}) 检查更新 / 更新到最新版\n"
+  printf   "  ${C_B}8${C_0}) 卸载私人云盘（清理项目文件）\n"
   printf   "  ${C_B}0${C_0}) 退出\n"
   printf   "${C_G}----------------------------------------------${C_0}\n"
 }
@@ -42,6 +44,9 @@ while true; do
     5) bash "$MANAGE" password; pause ;;
     6) bash "$INSTALL"; pause ;;
     7)
+      bash "$UPDATE"
+      pause ;;
+    8)
       bash "$UNINSTALL"
       rc=$?
       # 0=成功 / 3=有残留失败：项目文件（含本脚本）已删除，必须退出菜单，
@@ -52,6 +57,6 @@ while true; do
       fi
       pause ;;
     0|q|Q) printf "再见！\n"; exit 0 ;;
-    *) printf "${C_R}无效选项，请输入 0-7${C_0}\n" ;;
+    *) printf "${C_R}无效选项，请输入 0-8${C_0}\n" ;;
   esac
 done
