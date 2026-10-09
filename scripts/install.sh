@@ -94,6 +94,29 @@ upsert_env() { # $1=KEY $2=VALUE  （在 $ENV_FILE 中更新或追加）
   fi
 }
 
+# 自动探测公网 IP（国内源优先，单个超时 3 秒；全部失败退回网卡 IP / 占位符）
+PUBLIC_IP=""
+detect_public_ip() {
+  local raw="" urls="https://myip.ipip.net http://cip.cc https://api.ipify.org https://ifconfig.me" u
+  if command -v curl >/dev/null 2>&1; then
+    for u in $urls; do
+      raw=$(curl -s -4 -m 3 "$u" 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+      [ -n "$raw" ] && { PUBLIC_IP="$raw"; return 0; }
+    done
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    for u in $urls; do
+      raw=$(wget -q -T 3 -O - "$u" 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+      [ -n "$raw" ] && { PUBLIC_IP="$raw"; return 0; }
+    done
+  fi
+  raw=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2; exit}' | cut -d/ -f1)
+  [ -z "$raw" ] && raw=$(hostname -I 2>/dev/null | awk '{print $1}')
+  if [ -n "$raw" ]; then PUBLIC_IP="$raw"; return 1; fi
+  PUBLIC_IP="服务器IP"
+  return 1
+}
+
 # ============================================================
 printf "\n${C_G}==============================================${C_0}\n"
 printf   "${C_G}        私人云盘 一键安装 / 初始化           ${C_0}\n"
@@ -309,16 +332,25 @@ EOF
 fi
 
 # ---------------- 5.5 nginx 子路径反代（可选，改变系统先询问） ----------------
-# 配置后可用 http://服务器IP/yunpan 访问，无需带端口号
+# 配置后可用 http://公网IP/yunpan 访问，无需带端口号
 NGINX_CONF=/etc/nginx/conf.d/yunpan.conf
+NGINX_DONE=0
 setup_nginx() {
-  # Debian/Ubuntu：移除会抢占 80 端口的默认站点；CentOS：去掉 nginx.conf 内置站点的 default_server
+  # 0) conf.d 目录可能不存在（部分发行版/自编译 nginx），先确保目录在
+  local conf_dir
+  conf_dir=$(dirname "$NGINX_CONF")
+  if [ ! -d "$conf_dir" ]; then
+    mkdir -p "$conf_dir" || { err "无法创建 $conf_dir（权限不足？），跳过 nginx 配置"; return 1; }
+    info "已创建缺失目录 $conf_dir"
+  fi
+  # 1) Debian/Ubuntu：移除会抢占 80 端口的默认站点；CentOS：去掉 nginx.conf 内置站点的 default_server
   rm -f /etc/nginx/sites-enabled/default 2>/dev/null
   if grep -rq "default_server" /etc/nginx/nginx.conf 2>/dev/null; then
     cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak-cfm 2>/dev/null
     sed -i 's/listen 80 default_server/listen 80/; s/listen \[::\]:80 default_server/listen [::]:80/' /etc/nginx/nginx.conf
   fi
-  cat > "$NGINX_CONF" <<'EOF'
+  # 2) 写子路径反代配置（写失败立即报错退出，不再继续自检）
+  if ! cat > "$NGINX_CONF" <<'EOF'
 # 私人云盘：/yunpan 反代到本机 8000 端口
 server {
     listen 80;
@@ -345,33 +377,58 @@ server {
     }
 }
 EOF
+  then
+    err "写入 $NGINX_CONF 失败（权限不足？请用 root 执行），跳过 nginx 配置"
+    return 1
+  fi
+  # 3) 有些 nginx.conf 默认不加载 conf.d，缺少 include 时自动注入到 http 块
+  if ! grep -Eq 'include[[:space:]].*conf\.d/\*\.conf' /etc/nginx/nginx.conf 2>/dev/null; then
+    cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak-cfm 2>/dev/null
+    sed -i 's|^\([[:space:]]*http[[:space:]]*{\)|\1\n    include /etc/nginx/conf.d/*.conf;|' /etc/nginx/nginx.conf
+    info "nginx.conf 未加载 conf.d，已自动注入 include（原文件备份为 nginx.conf.bak-cfm）"
+  fi
+  # 4) 校验并重载
   if nginx -t >/dev/null 2>&1; then
     systemctl enable --now nginx >/dev/null 2>&1 || service nginx start >/dev/null 2>&1
     systemctl reload nginx >/dev/null 2>&1 || nginx -s reload >/dev/null 2>&1
     sleep 1
+    NGINX_DONE=1
     if command -v curl >/dev/null 2>&1 && [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1/yunpan/)" = "200" ]; then
-      ok "nginx 子路径配置完成：http://服务器IP/yunpan"
+      ok "nginx 子路径配置完成：http://$PUBLIC_IP/yunpan"
     else
-      warn "nginx 已配置，但本机自检未通过，请检查其他站点是否抢占 80 端口"
+      warn "nginx 配置已生效，但本机自检未通过。可能原因："
+      warn "  1) 80 端口被其他站点占用（ss -tlnp | grep ':80 ' 查看）"
+      warn "  2) nginx.conf 未加载 conf.d（手动在 http 块加: include /etc/nginx/conf.d/*.conf;）"
+      warn "  3) 云服务器安全组未放行 80 端口"
     fi
   else
-    warn "nginx 配置校验失败（nginx -t），请检查 $NGINX_CONF"
+    err "nginx 配置校验失败（nginx -t），已保留原配置；可检查 $NGINX_CONF 后执行: nginx -s reload"
+    rm -f "$NGINX_CONF"
   fi
 }
 
 printf "\n"
+info "正在探测公网 IP…"
+if detect_public_ip; then
+  ok "公网 IP：$PUBLIC_IP"
+else
+  warn "公网 IP 探测失败，下面地址中的 IP 请自行替换（可能显示的是内网 IP）"
+fi
+
 if [ -f "$NGINX_CONF" ]; then
   ok "检测到已有 nginx 子路径配置 /yunpan"
   if confirm "是否重新生成该配置？"; then
     if command -v nginx >/dev/null 2>&1; then setup_nginx
     else err "nginx 未安装，请先安装 nginx"; fi
+  else
+    NGINX_DONE=1
   fi
 elif command -v nginx >/dev/null 2>&1; then
-  if confirm "是否配置 nginx 子路径访问（http://服务器IP/yunpan，免端口号）？"; then
+  if confirm "是否配置 nginx 子路径访问（http://$PUBLIC_IP/yunpan，免端口号）？"; then
     setup_nginx
   fi
 else
-  if confirm "未检测到 nginx。是否安装 nginx 并配置 http://服务器IP/yunpan 访问？（改变系统）"; then
+  if confirm "未检测到 nginx。是否安装 nginx 并配置 http://$PUBLIC_IP/yunpan 访问？（改变系统）"; then
     pkg_install nginx || { err "nginx 安装失败，跳过子路径配置"; }
     command -v nginx >/dev/null 2>&1 && setup_nginx
   fi
@@ -385,11 +442,27 @@ if confirm "是否立即启动服务？"; then
   PORT_NOW=${PORT_NOW:-8000}
   printf "\n${C_G}==============================================${C_0}\n"
   printf   "${C_G}  安装完成！${C_0}\n"
-  printf   "  访问地址： ${C_B}http://服务器IP:%s${C_0}\n" "$PORT_NOW"
+  printf   "  访问地址： ${C_B}http://%s:%s${C_0}\n" "$PUBLIC_IP" "$PORT_NOW"
+  if [ "$NGINX_DONE" = "1" ]; then
+    printf   "  （免端口） ${C_B}http://%s/yunpan${C_0}\n" "$PUBLIC_IP"
+  fi
+  if [ -n "${CFM_PW_INPUT:-}" ]; then
+    printf   "  初始密码： ${C_Y}%s${C_0}   ${C_Y}← 请立即记下，仅展示这一次；首次登录会强制修改${C_0}\n" "$CFM_PW_INPUT"
+  else
+    printf   "  登录密码： 沿用已有配置（不展示）。忘记密码可执行：\n"
+    printf   "             bash %s/scripts/manage.sh password\n" "$PROJECT_DIR"
+  fi
   printf   "  管理脚本： bash %s/scripts/menu.sh\n" "$PROJECT_DIR"
   printf   "  项目目录： %s\n" "$PROJECT_DIR"
   printf "${C_G}==============================================${C_0}\n"
-  printf   "  ${C_Y}别忘了在云厂商安全组放行端口 %s${C_0}\n\n" "$PORT_NOW"
+  if [ "$NGINX_DONE" = "1" ]; then
+    printf   "  ${C_Y}别忘了在云厂商安全组放行端口 %s 和 80${C_0}\n\n" "$PORT_NOW"
+  else
+    printf   "  ${C_Y}别忘了在云厂商安全组放行端口 %s${C_0}\n\n" "$PORT_NOW"
+  fi
 else
   info "稍后可用 bash $PROJECT_DIR/scripts/menu.sh 启动"
+  if [ -n "${CFM_PW_INPUT:-}" ]; then
+    info "本次生成的初始密码：$CFM_PW_INPUT（仅展示这一次，请记下）"
+  fi
 fi

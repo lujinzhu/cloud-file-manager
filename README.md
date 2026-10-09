@@ -44,6 +44,8 @@
 curl -fsSL https://raw.githubusercontent.com/lujinzhu/cloud-file-manager/main/scripts/install.sh | bash
 ```
 
+
+
 > 大陆服务器若访问 GitHub 不畅，用镜像加速：
 >
 > ```bash
@@ -58,6 +60,9 @@ curl -fsSL https://raw.githubusercontent.com/lujinzhu/cloud-file-manager/main/sc
 4. 生成 `.env` 配置：**密码只保存 PBKDF2 哈希**；**云盘容量自动设为磁盘总容量的 80%（取整）**，并把所有环境变量的值**展示给你**（随机密码仅显示这一次）
 5. 可选安装 systemd 常驻服务（会先询问）
 6. 可选安装并配置 **nginx 子路径反代**：用 `http://服务器IP/yunpan` 免端口访问（会先询问；80 端口需在云厂商安全组放行）
+7. 安装完成自动**探测公网 IP**，横幅直接给出**可点开的访问地址**和**初始密码**（仅展示这一次，首次登录会强制修改）
+
+> nginx 配置兼容性：脚本会自动创建缺失的 `/etc/nginx/conf.d/` 目录，并在 `nginx.conf` 缺少 `include conf.d/*.conf` 时自动注入（原文件备份为 `nginx.conf.bak-cfm`）。
 
 已有项目目录时也可以直接运行向导：`bash scripts/install.sh`
 
@@ -102,22 +107,22 @@ bash scripts/uninstall.sh
 
 配置统一存放在项目根目录的 `.env`（权限 600），由 install.sh 生成，manage.sh 维护：
 
-| 变量 | 说明 | 默认值 |
-|---|---|---|
-| `CFM_ROOT` | 要管理的根目录 | 项目目录下 `cloud-files`（初始化时固定，保证所有文件都在部署目录内） |
-| `CFM_PASSWORD_HASH` | 登录密码的 PBKDF2-SHA256 哈希（**推荐，install.sh 自动生成**） | 无 |
-| `CFM_PASSWORD_SALT` | 哈希盐（随机 hex，与 HASH 配套） | 无 |
-| `CFM_INITIAL_PASSWORD_HASH` | **初始密码**的哈希（install.sh 自动生成，与初始时的 `CFM_PASSWORD_HASH` 一致） | 无 |
-| `CFM_INITIAL_PASSWORD_SALT` | 初始密码哈希的盐 | 无 |
-| `CFM_QUOTA` | 云盘总容量（字节）；初始化默认磁盘 80% 取整，网页设置里可调（上限磁盘 90%） | 磁盘 80% |
-| `CFM_PASSWORD` | 明文密码（仅兼容旧部署；设置了 HASH 即忽略） | `123456` |
-| `CFM_HOST` | 监听地址 | `0.0.0.0` |
-| `CFM_PORT` | 监听端口 | `8000` |
-| `CFM_SECRET` | Flask 会话密钥（不设则重启后需重新登录） | 随机 |
-| `CFM_CHUNK_SIZE` | 上传分片大小（字节） | `1048576`（1MB） |
-| `CFM_UPLOAD_TTL` | 未完成上传会话保留时长（秒） | `86400`（24 小时） |
-| `CFM_PBKDF2_ITERATIONS` | PBKDF2 迭代次数 | `60000` |
-| `CFM_SEARCH_LIMIT` | 搜索结果上限 | `300` |
+| 变量                          | 说明                                                        | 默认值                                       |
+| --------------------------- | --------------------------------------------------------- | ----------------------------------------- |
+| `CFM_ROOT`                  | 要管理的根目录                                                   | 项目目录下 `cloud-files`（初始化时固定，保证所有文件都在部署目录内） |
+| `CFM_PASSWORD_HASH`         | 登录密码的 PBKDF2-SHA256 哈希（**推荐，install.sh 自动生成**）            | 无                                         |
+| `CFM_PASSWORD_SALT`         | 哈希盐（随机 hex，与 HASH 配套）                                     | 无                                         |
+| `CFM_INITIAL_PASSWORD_HASH` | **初始密码**的哈希（install.sh 自动生成，与初始时的 `CFM_PASSWORD_HASH` 一致） | 无                                         |
+| `CFM_INITIAL_PASSWORD_SALT` | 初始密码哈希的盐                                                  | 无                                         |
+| `CFM_QUOTA`                 | 云盘总容量（字节）；初始化默认磁盘 80% 取整，网页设置里可调（上限磁盘 90%）                | 磁盘 80%                                    |
+| `CFM_PASSWORD`              | 明文密码（仅兼容旧部署；设置了 HASH 即忽略）                                 | `123456`                                  |
+| `CFM_HOST`                  | 监听地址                                                      | `0.0.0.0`                                 |
+| `CFM_PORT`                  | 监听端口                                                      | `8000`                                    |
+| `CFM_SECRET`                | Flask 会话密钥（不设则重启后需重新登录）                                   | 随机                                        |
+| `CFM_CHUNK_SIZE`            | 上传分片大小（字节）                                                | `1048576`（1MB）                            |
+| `CFM_UPLOAD_TTL`            | 未完成上传会话保留时长（秒）                                            | `86400`（24 小时）                            |
+| `CFM_PBKDF2_ITERATIONS`     | PBKDF2 迭代次数                                               | `60000`                                   |
+| `CFM_SEARCH_LIMIT`          | 搜索结果上限                                                    | `300`                                     |
 
 > `.env` 含会话密钥与哈希，已被 `.gitignore` 排除，**不要提交到仓库**。
 
@@ -163,30 +168,30 @@ pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ## 接口一览
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/login` | 登录（服务端校验 PBKDF2 哈希；返回 mustChange 标记强制改密） |
-| POST | `/api/logout` | 退出 |
-| GET | `/api/me` | 查询登录态 |
-| POST | `/api/password` | 修改密码（旧密码 + 新密码 ≥6 位；成功后强制重新登录） |
-| GET | `/api/quota` | 云盘容量：已用 / 总容量 / 磁盘总量 |
-| POST | `/api/quota` | 设置云盘容量（上限磁盘总容量的 90%，下限已用容量） |
-| GET | `/api/list?path=` | 列出目录 |
-| GET | `/api/search?q=` | 递归模糊搜索（大小写不敏感） |
-| POST | `/api/upload?path=` | 上传（multipart，支持多文件） |
-| GET / HEAD | `/api/download?path=` | 下载；`&inline=1` 内嵌预览（自动 MIME） |
-| POST | `/api/mkdir` | 新建文件夹 |
-| POST | `/api/delete` | 删除（递归） |
-| POST | `/api/upload_status` | 续传状态（uploadId / received[] / 秒传判定） |
-| POST | `/api/upload_chunk?uploadId=&index=` | 上传单个分片 |
-| POST | `/api/upload_finalize?uploadId=` | 合并分片 |
-| POST | `/api/upload_abort?uploadId=` | 放弃并清理 |
-| GET | `/api/share` | 分享链接列表（含下载次数、到期时间） |
-| POST | `/api/share` | 生成分享链接（`{path, expire}`；expire 单位为小时，0=永久） |
-| DELETE | `/api/share` | 取消分享（`{token}`），链接立即失效 |
-| GET | `/s/<token>` | **公开下载**：免登录，任何人打开即下载（过期/失效返回中文说明页） |
+| 方法         | 路径                                   | 说明                                         |
+| ---------- | ------------------------------------ | ------------------------------------------ |
+| POST       | `/api/login`                         | 登录（服务端校验 PBKDF2 哈希；返回 mustChange 标记强制改密）   |
+| POST       | `/api/logout`                        | 退出                                         |
+| GET        | `/api/me`                            | 查询登录态                                      |
+| POST       | `/api/password`                      | 修改密码（旧密码 + 新密码 ≥6 位；成功后强制重新登录）             |
+| GET        | `/api/quota`                         | 云盘容量：已用 / 总容量 / 磁盘总量                       |
+| POST       | `/api/quota`                         | 设置云盘容量（上限磁盘总容量的 90%，下限已用容量）                |
+| GET        | `/api/list?path=`                    | 列出目录                                       |
+| GET        | `/api/search?q=`                     | 递归模糊搜索（大小写不敏感）                             |
+| POST       | `/api/upload?path=`                  | 上传（multipart，支持多文件）                        |
+| GET / HEAD | `/api/download?path=`                | 下载；`&inline=1` 内嵌预览（自动 MIME）               |
+| POST       | `/api/mkdir`                         | 新建文件夹                                      |
+| POST       | `/api/delete`                        | 删除（递归）                                     |
+| POST       | `/api/upload_status`                 | 续传状态（uploadId / received[] / 秒传判定）         |
+| POST       | `/api/upload_chunk?uploadId=&index=` | 上传单个分片                                     |
+| POST       | `/api/upload_finalize?uploadId=`     | 合并分片                                       |
+| POST       | `/api/upload_abort?uploadId=`        | 放弃并清理                                      |
+| GET        | `/api/share`                         | 分享链接列表（含下载次数、到期时间）                         |
+| POST       | `/api/share`                         | 生成分享链接（`{path, expire}`；expire 单位为小时，0=永久） |
+| DELETE     | `/api/share`                         | 取消分享（`{token}`），链接立即失效                     |
+| GET        | `/s/<token>`                         | **公开下载**：免登录，任何人打开即下载（过期/失效返回中文说明页）        |
 
-除 `/api/login`、`/api/me`、`/s/<token>` 外均需登录（401）；非法路径返回 400。
+除 `/api/login`、`/api/me`、`/s/<token>` 外均需登录（401）；非法路径返回 400。  
 分享记录保存在项目目录的 `.shares.json`（不写入共享文件夹，不会污染文件列表）。
 
 ## 安全说明
@@ -258,11 +263,11 @@ pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ## 两端使用差异
 
-| 能力 | Windows (Chrome/Edge) | Android |
-|---|---|---|
-| 拖拽上传 | ✅ | ❌ 点「⬆️ 上传」 |
-| 上传进度/续传 | ✅ | ✅ |
-| 文件预览 | ✅ | ✅ |
-| 搜索/排序 | ✅ | ✅ |
-| 下载到指定文件夹 | ✅ | ⚠️ 存到系统「下载」目录 |
-| 安装为 App | ✅ | ✅ |
+| 能力       | Windows (Chrome/Edge) | Android       |
+| -------- | --------------------- | ------------- |
+| 拖拽上传     | ✅                     | ❌ 点「⬆️ 上传」    |
+| 上传进度/续传  | ✅                     | ✅             |
+| 文件预览     | ✅                     | ✅             |
+| 搜索/排序    | ✅                     | ✅             |
+| 下载到指定文件夹 | ✅                     | ⚠️ 存到系统「下载」目录 |
+| 安装为 App  | ✅                     | ✅             |
